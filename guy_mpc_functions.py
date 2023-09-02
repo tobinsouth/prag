@@ -104,7 +104,7 @@ def cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor, A_mag_recip: tor
         return None
     
 # @mpc.run_multiprocess(world_size=2)
-def dot_score_mpc(A: torch.Tensor, B: torch.Tensor, A_mag_recip: torch.Tensor, B_mag_recip: torch.Tensor) -> bytes | None:
+def dot_score_mpc(A: torch.Tensor, B: torch.Tensor) -> bytes:
     """
     Computes the dot-product dot_prod(a[i], b[j]) for all i and j.
     :return: Matrix with res[i][j]  = dot_prod(a[i], b[j])
