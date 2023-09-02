@@ -63,6 +63,7 @@ print("Corpus size: {} on {} queries".format(len(corpus), len(queries)))
 pickle.dump([corpus, qrels, queries], open("corpus.pkl", "wb"))
 corpus, qrels, queries = pickle.load(open("corpus.pkl", "rb"))
 
+
 #### Dense Retrieval using SBERT (Sentence-BERT) ####
 embedding_model = models.SentenceBERT("msmarco-distilbert-base-tas-b")
 from sentence_transformers import SentenceTransformer
@@ -70,8 +71,8 @@ embedding_model.q_model = SentenceTransformer("msmarco-distilbert-base-tas-b", d
 
 model = DenseRetrievalExactSearch(embedding_model, batch_size=256, corpus_chunk_size=512*9999)
 
-model.preemebed_corpus(corpus, save_path="corpus_embeddings.pt")
-model.preembed_queries(queries, save_path="query_embeddings.pt")
+# model.preemebed_corpus(corpus, save_path="corpus_embeddings.pt")
+# model.preembed_queries(queries, save_path="query_embeddings.pt")
 model.load_preembeddings("corpus_embeddings.pt", "query_embeddings.pt")
 
 # Now we benchmark normal dense retrieval
@@ -83,5 +84,17 @@ benchmark_retriever(retriever, corpus, queries, qrels)
 model = MPCDenseRetrievalExactSearch(embedding_model, batch_size=256, corpus_chunk_size=512*9999)
 model.load_preembeddings("corpus_embeddings.pt", "query_embeddings.pt")
 
-model.search(corpus, queries, top_k=10, score_function="cos_sim")
+retriever = EvaluateRetrieval(model, score_function="cos_sim")
+benchmark_retriever(retriever, corpus, queries, qrels)
 
+retriever = EvaluateRetrieval(model, score_function="mpc_opt")
+benchmark_retriever(retriever, corpus, queries, qrels)
+
+retriever = EvaluateRetrieval(model, score_function="mpc_naive")
+benchmark_retriever(retriever, corpus, queries, qrels)
+
+retriever = EvaluateRetrieval(model, score_function="dot")
+benchmark_retriever(retriever, corpus, queries, qrels)
+
+retriever = EvaluateRetrieval(model, score_function="mpc_dot")
+benchmark_retriever(retriever, corpus, queries, qrels)
