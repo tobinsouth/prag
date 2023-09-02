@@ -26,6 +26,7 @@ If you're interested in accuracy or speed on synthetic data, you can run `speed_
 - [ ] Setup benchmarking script that cross benchmarks on time and accuracy for (distance measures) x (MPC vs non-MPC) x (standard datasets) x (embedding models). This will have an astronomical runtime but will be good for the paper.
 - [ ] Integrate with langchain.
 - [ ] Lock down more details in the actual MPC stuff.
+- [ ] Add a test suite and CI.
 
 ## Notes
 
