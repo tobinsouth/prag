@@ -102,6 +102,22 @@ def cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor, A_mag_recip: tor
         return cosine_sim_binary
     else:
         return None
+    
+# @mpc.run_multiprocess(world_size=2)
+def dot_score_mpc(A: torch.Tensor, B: torch.Tensor, A_mag_recip: torch.Tensor, B_mag_recip: torch.Tensor) -> bytes | None:
+    """
+    Computes the dot-product dot_prod(a[i], b[j]) for all i and j.
+    :return: Matrix with res[i][j]  = dot_prod(a[i], b[j])
+    """
+    # secret-share A, B
+    A_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
+    B_enc = crypten.cryptensor(B, ptype=crypten.mpc.arithmetic)
+
+    # Compute the dot product of A and B
+    dot_product = A_enc.matmul(B_enc)
+
+    dot_score_binary = pickle.dumps(dot_product.get_plain_text())
+    return dot_score_binary
 
 def cosine_sim_naive_test():
     # Load the data from CSV files
