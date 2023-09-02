@@ -1,7 +1,7 @@
 from LocalDenseRetrievalExactSearch import DenseRetrievalExactSearch
 from  beir.util import cos_sim, dot_score
 import logging
-from guy_mpc_functions import cosine_similarity_mpc_naive, cosine_similarity_mpc_opt, preprocess_cosine_similarity_mpc_opt, dot_score_mpc
+from mpc_functions import cosine_similarity_mpc_naive, cosine_similarity_mpc_opt, preprocess_cosine_similarity_mpc_opt, dot_score_mpc
 import torch, pickle
 
 logger = logging.getLogger(__name__)
