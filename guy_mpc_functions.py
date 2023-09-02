@@ -24,8 +24,7 @@ torch.set_num_threads(1)
 def relative_error(y_pred, y_true):
     return torch.mean(torch.abs(y_pred - y_true) / torch.abs(y_true))
 
-
-def preprocess_cosine_similarity_mpc_naive(args):
+def preprocess_cosine_similarity_mpc_naive(args) -> [torch.Tensor, torch.Tensor]:
     if (args != []):
         query_vector = args[0]
         database_vectors = args[1]
@@ -35,7 +34,10 @@ def preprocess_cosine_similarity_mpc_naive(args):
     return [query_vector, database_vectors]
 
 # @mpc.run_multiprocess(world_size=2)
-def cosine_similarity_mpc_naive(A, B):
+def cosine_similarity_mpc_naive(A: torch.Tensor, B: torch.Tensor) -> bytes | None:
+    """
+    Computes the cosine similarity between two tensors A and B using crypten. The magnitude of A and B are computed in-function.
+    """
     # secret-share A, B
     A_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
     B_enc = crypten.cryptensor(B, ptype=crypten.mpc.arithmetic)
@@ -61,7 +63,7 @@ def cosine_similarity_mpc_naive(A, B):
     else:
         return None
 
-def preprocess_cosine_similarity_mpc_opt(args):
+def preprocess_cosine_similarity_mpc_opt(args: list) -> [torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     args = preprocess_cosine_similarity_mpc_naive(args)
     A = args[0]
     B = args[1]
@@ -71,7 +73,12 @@ def preprocess_cosine_similarity_mpc_opt(args):
     return [A, B, A_mag_recip, B_mag_recip]
 
 # @mpc.run_multiprocess(world_size=2)
-def cosine_similarity_mpc_opt(A, B, A_mag_recip, B_mag_recip):
+def cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor, A_mag_recip: torch.Tensor, B_mag_recip: torch.Tensor) -> bytes | None:
+    """
+    Computes the cosine similarity between two tensors A and B using crypten. The magnitude of A and B are pre-computed and passed in (different from cosine_similarity_mpc_naive).
+
+    A_mag_recip and B_mag_recip are the reciprocals of the magnitudes of A and B, stored in single element tensors.
+    """
     # secret-share A, B
     A_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
     B_enc = crypten.cryptensor(B, ptype=crypten.mpc.arithmetic)
@@ -206,9 +213,10 @@ def run_benchmark(func, preprocess_func, args, num_trials=5):
     print(f"Average precision loss: {avg_error*100}%")
     
 
-# run_benchmark(cosine_similarity_mpc_naive, preprocess_cosine_similarity_mpc_naive, [], num_trials=1)
-# run_benchmark(cosine_similarity_mpc_opt, preprocess_cosine_similarity_mpc_opt, [], num_trials=1)
-
 if __name__ == "__main__":
     cosine_sim_naive_test()
     cosine_sim_opt_test()
+
+
+    # run_benchmark(cosine_similarity_mpc_naive, preprocess_cosine_similarity_mpc_naive, [], num_trials=1)
+    # run_benchmark(cosine_similarity_mpc_opt, preprocess_cosine_similarity_mpc_opt, [], num_trials=1)
