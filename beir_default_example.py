@@ -3,7 +3,7 @@ from beir import util, LoggingHandler
 from beir.retrieval import models
 from beir.datasets.data_loader import GenericDataLoader
 from beir.retrieval.evaluation import EvaluateRetrieval
-from beir.retrieval.search.dense import DenseRetrievalExactSearch as DRES
+from beir.retrieval.search.dense import DenseRetrievalExactSearch
 
 import logging
 import pathlib, os
@@ -36,7 +36,7 @@ corpus, queries, qrels = GenericDataLoader(data_folder=data_path).load(split="te
 #### The model was fine-tuned using cosine-similarity.
 #### Complete list - https://www.sbert.net/docs/pretrained_models.html
 
-model = DRES(models.SentenceBERT("msmarco-distilbert-base-tas-b"), batch_size=256, corpus_chunk_size=512*9999)
+model = DenseRetrievalExactSearch(models.SentenceBERT("msmarco-distilbert-base-tas-b"), batch_size=256, corpus_chunk_size=512*9999)
 retriever = EvaluateRetrieval(model, score_function="dot")
 
 #### Retrieve dense results (format of results is identical to qrels)
