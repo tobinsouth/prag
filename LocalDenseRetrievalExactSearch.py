@@ -17,7 +17,6 @@ class DenseRetrievalExactSearch(BaseSearch):
         self.model = model
         self.batch_size = batch_size
         self.score_functions = {'cos_sim': cos_sim, 'dot': dot_score}
-        self.score_function_desc = {'cos_sim': "Cosine Similarity", 'dot': "Dot Product"}
         self.corpus_chunk_size = corpus_chunk_size
         self.show_progress_bar = kwargs.get("show_progress_bar", True)
         self.convert_to_tensor = kwargs.get("convert_to_tensor", True)
@@ -98,8 +97,6 @@ class DenseRetrievalExactSearch(BaseSearch):
         print("Sorting Corpus by document length (Longest first)...")
         corpus_ids = sorted(corpus, key=lambda k: len(corpus[k].get("title", "") + corpus[k].get("text", "")), reverse=True)
         corpus = [corpus[cid] for cid in corpus_ids]
-
-        print("Scoring Function: {} ({})".format(self.score_function_desc[score_function], score_function))
 
         itr = range(0, len(corpus), self.corpus_chunk_size)
         
