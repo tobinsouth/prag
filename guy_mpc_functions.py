@@ -190,7 +190,7 @@ def run_benchmark(func, preprocess_func, args, num_trials=5):
         end_time = time.time()
         times[i] = end_time - start_time
 
-        res_mpc = pickle.loads(res_binary[0])
+        res_mpc = pickle.loads(res_binary) # removed [0]
         # print(f"res_mpc shape = {res_mpc.shape}")
         results_mpc.append(res_mpc)
         res = cosine_similarity(new_args[0], new_args[1].t())
@@ -218,5 +218,5 @@ if __name__ == "__main__":
     cosine_sim_opt_test()
 
 
-    # run_benchmark(cosine_similarity_mpc_naive, preprocess_cosine_similarity_mpc_naive, [], num_trials=1)
-    # run_benchmark(cosine_similarity_mpc_opt, preprocess_cosine_similarity_mpc_opt, [], num_trials=1)
+    run_benchmark(cosine_similarity_mpc_naive, preprocess_cosine_similarity_mpc_naive, [], num_trials=5)
+    run_benchmark(cosine_similarity_mpc_opt, preprocess_cosine_similarity_mpc_opt, [], num_trials=5)
