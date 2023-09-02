@@ -1,7 +1,7 @@
 # pip install chromadb langchain
 import os, numpy as np
 
-os.environ['OPENAI_API_KEY'] = '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'
+os.environ['OPENAI_API_KEY'] = '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' # will need to burn this API key after public release
 
 from langchain.document_loaders import TextLoader
 from langchain.embeddings.openai import OpenAIEmbeddings
