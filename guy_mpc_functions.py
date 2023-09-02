@@ -21,6 +21,10 @@ crypten.init()
 #Disables OpenMP threads -- needed by @mpc.run_multiprocess which uses fork
 torch.set_num_threads(1)
 
+def relative_error(y_pred, y_true):
+    return torch.mean(torch.abs(y_pred - y_true) / torch.abs(y_true))
+
+
 def preprocess_cosine_similarity_mpc_naive(args):
     if (args != []):
         query_vector = args[0]
@@ -30,7 +34,7 @@ def preprocess_cosine_similarity_mpc_naive(args):
         database_vectors = torch.randn(*BENCHMARK_DIM2)
     return [query_vector, database_vectors]
 
-@mpc.run_multiprocess(world_size=2)
+# @mpc.run_multiprocess(world_size=2)
 def cosine_similarity_mpc_naive(A, B):
     # secret-share A, B
     A_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
@@ -66,7 +70,7 @@ def preprocess_cosine_similarity_mpc_opt(args):
 
     return [A, B, A_mag_recip, B_mag_recip]
 
-@mpc.run_multiprocess(world_size=2)
+# @mpc.run_multiprocess(world_size=2)
 def cosine_similarity_mpc_opt(A, B, A_mag_recip, B_mag_recip):
     # secret-share A, B
     A_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
@@ -94,8 +98,8 @@ def cosine_similarity_mpc_opt(A, B, A_mag_recip, B_mag_recip):
 
 def cosine_sim_naive_test():
     # Load the data from CSV files
-    query_vector = pd.read_csv('./tutorials/data/query_vector.csv').values
-    database_vectors = pd.read_csv('./tutorials/data/D.csv').values
+    query_vector = pd.read_csv('query_vector.csv').values
+    database_vectors = pd.read_csv('D.csv').values
 
     # Convert the data to PyTorch tensors
     query_vector = torch.tensor(query_vector, dtype=torch.float32).t()
@@ -111,7 +115,7 @@ def cosine_sim_naive_test():
     print(f"cosine similarities torch native shape={cosine_similarities.shape}")
 
     cosine_similarities2_binary = cosine_similarity_mpc_naive(query_vector, database_vectors)
-    cosine_similarities2 = pickle.loads(cosine_similarities2_binary[0])
+    cosine_similarities2 = pickle.loads(cosine_similarities2_binary) # removed [0]
     print(cosine_similarities2)
 
     if torch.allclose(cosine_similarities, cosine_similarities2, atol=0.02):
@@ -129,8 +133,8 @@ def cosine_sim_naive_test():
 
 def cosine_sim_opt_test():
     # Load the data from CSV files
-    query_vector = pd.read_csv('./tutorials/data/query_vector.csv').values
-    database_vectors = pd.read_csv('./tutorials/data/D.csv').values
+    query_vector = pd.read_csv('query_vector.csv').values
+    database_vectors = pd.read_csv('D.csv').values
 
     # Convert the data to PyTorch tensors
     query_vector = torch.tensor(query_vector, dtype=torch.float32).t()
@@ -147,7 +151,7 @@ def cosine_sim_opt_test():
     print(cosine_similarities.shape)
 
     cosine_similarities2_binary = cosine_similarity_mpc_opt(query_vector, database_vectors, qv_mag_recip, db_mag_recip)
-    cosine_similarities2 = pickle.loads(cosine_similarities2_binary[0])
+    cosine_similarities2 = pickle.loads(cosine_similarities2_binary) # [0] removed
     print(cosine_similarities2)
 
     if torch.allclose(cosine_similarities, cosine_similarities2, atol=0.02):
@@ -162,9 +166,6 @@ def cosine_sim_opt_test():
 
     err = relative_error(cosine_similarities2, cosine_similarities)
     print(f"(Optimized) Average precision loss: {err*100}%")
-
-def relative_error(y_pred, y_true):
-    return torch.mean(torch.abs(y_pred - y_true) / torch.abs(y_true))
 
 def run_benchmark(func, preprocess_func, args, num_trials=5):
     ## Benchmark time
@@ -208,5 +209,6 @@ def run_benchmark(func, preprocess_func, args, num_trials=5):
 # run_benchmark(cosine_similarity_mpc_naive, preprocess_cosine_similarity_mpc_naive, [], num_trials=1)
 # run_benchmark(cosine_similarity_mpc_opt, preprocess_cosine_similarity_mpc_opt, [], num_trials=1)
 
-cosine_sim_naive_test()
-cosine_sim_opt_test()
+if __name__ == "__main__":
+    cosine_sim_naive_test()
+    cosine_sim_opt_test()
