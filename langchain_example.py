@@ -17,6 +17,10 @@ embedding_model = OpenAIEmbeddings()
 # Get database
 db = Chroma.from_documents(documents, embedding_model)
 
+
+Chroma?
+
+
 # Take the raw matrix from the database
 db_as_dict = db.get(include=["embeddings", "metadatas", "documents"])
 
