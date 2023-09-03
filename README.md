@@ -24,7 +24,7 @@ If you're interested in accuracy or speed on synthetic data, you can run `speed_
 - [ ] Check why MPC cos_sim naive has extremely high error.
 - [ ] Update the `benchmark_retriever()` to return the values we really care about.
 - [ ] Setup benchmarking script that cross benchmarks on time and accuracy for (distance measures) x (MPC vs non-MPC) x (standard datasets) x (embedding models). This will have an astronomical runtime but will be good for the paper.
-- [ ] Integrate with langchain.
+- [ ] Integrate with langchain. (maybe [here](https://github.com/chroma-core/chroma/blob/81ab0b112492b26d302df446a850779196c5af98/chromadb/segment/impl/vector/brute_force_index.py#L11) (It's worth noting that ChromaDB using HNSW under the hood for efficiency. 
 - [ ] Lock down more details in the actual MPC stuff.
 - [ ] Add a test suite and CI.
 
