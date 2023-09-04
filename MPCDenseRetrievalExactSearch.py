@@ -22,7 +22,7 @@ class MPCDenseRetrievalExactSearch(DenseRetrievalExactSearch):
         # database_vectors = torch.tensor(database_vectors, dtype=torch.float32)
 
         cosine_sim_binary = cosine_similarity_mpc_naive(query_embeddings, sub_corpus_embeddings.t())
-        cosine_sim = pickle.loads(cosine_sim_binary) # removed [0]
+        cosine_sim = pickle.loads(cosine_sim_binary[0]) # remove [0] for single threaded
 
         # # Include for debugging
         # default_cos_sim = cos_sim(query_embeddings, sub_corpus_embeddings)
@@ -37,11 +37,11 @@ class MPCDenseRetrievalExactSearch(DenseRetrievalExactSearch):
         query_vector, database_vectors, qv_mag_recip, db_mag_recip = preprocess_cosine_similarity_mpc_opt([query_embeddings, sub_corpus_embeddings.t()])
 
         cosine_sim_binary = cosine_similarity_mpc_opt(query_vector, database_vectors, qv_mag_recip, db_mag_recip)
-        cosine_sim = pickle.loads(cosine_sim_binary) # [0] removed
+        cosine_sim = pickle.loads(cosine_sim_binary[0]) # remove [0] for single threaded
 
         return cosine_sim
     
     def mpc_dot(self, query_embeddings, sub_corpus_embeddings):
         dot_score_binary = dot_score_mpc(query_embeddings, sub_corpus_embeddings.t())
-        dot_score_res = pickle.loads(dot_score_binary) # [0] removed
+        dot_score_res = pickle.loads(dot_score_binary[0]) # remove [0] for single threaded
         return dot_score_res

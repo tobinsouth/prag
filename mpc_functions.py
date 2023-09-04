@@ -33,7 +33,7 @@ def preprocess_cosine_similarity_mpc_naive(args) -> [torch.Tensor, torch.Tensor]
         database_vectors = torch.randn(*BENCHMARK_DIM2)
     return [query_vector, database_vectors]
 
-# @mpc.run_multiprocess(world_size=2)
+@mpc.run_multiprocess(world_size=2)
 def cosine_similarity_mpc_naive(A: torch.Tensor, B: torch.Tensor) -> bytes | None:
     """
     Computes the cosine similarity between two tensors A and B using crypten. The magnitude of A and B are computed in-function.
@@ -72,7 +72,7 @@ def preprocess_cosine_similarity_mpc_opt(args: list) -> [torch.Tensor, torch.Ten
 
     return [A, B, A_mag_recip, B_mag_recip]
 
-# @mpc.run_multiprocess(world_size=2)
+@mpc.run_multiprocess(world_size=2)
 def cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor, A_mag_recip: torch.Tensor, B_mag_recip: torch.Tensor) -> bytes | None:
     """
     Computes the cosine similarity between two tensors A and B using crypten. The magnitude of A and B are pre-computed and passed in (different from cosine_similarity_mpc_naive).
@@ -103,7 +103,7 @@ def cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor, A_mag_recip: tor
     else:
         return None
     
-# @mpc.run_multiprocess(world_size=2)
+@mpc.run_multiprocess(world_size=2)
 def dot_score_mpc(A: torch.Tensor, B: torch.Tensor) -> bytes:
     """
     Computes the dot-product dot_prod(a[i], b[j]) for all i and j.
@@ -138,7 +138,7 @@ def cosine_sim_naive_test():
     print(f"cosine similarities torch native shape={cosine_similarities.shape}")
 
     cosine_similarities2_binary = cosine_similarity_mpc_naive(query_vector, database_vectors)
-    cosine_similarities2 = pickle.loads(cosine_similarities2_binary) # removed [0]
+    cosine_similarities2 = pickle.loads(cosine_similarities2_binary[0]) # remove [0] for single threaded
     print(cosine_similarities2)
 
     if torch.allclose(cosine_similarities, cosine_similarities2, atol=0.02):
@@ -174,7 +174,7 @@ def cosine_sim_opt_test():
     print(cosine_similarities.shape)
 
     cosine_similarities2_binary = cosine_similarity_mpc_opt(query_vector, database_vectors, qv_mag_recip, db_mag_recip)
-    cosine_similarities2 = pickle.loads(cosine_similarities2_binary) # [0] removed
+    cosine_similarities2 = pickle.loads(cosine_similarities2_binary[0]) # remove [0] for single threaded
     print(cosine_similarities2)
 
     if torch.allclose(cosine_similarities, cosine_similarities2, atol=0.02):
