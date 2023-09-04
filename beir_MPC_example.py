@@ -29,7 +29,7 @@ def benchmark_retriever(retriever, corpus, queries, qrels):
     print("Performance of DenseRetrievalExactSearch: {recall}, {precision}, {ndcg}, {map}, {mrr}, {recall_cap}, {hole}".format(recall=recall, precision=precision, ndcg=ndcg, map=_map, mrr=mrr, recall_cap=recall_cap, hole=hole))
     return recall, precision
 
-def setup(reduce_corpus_size: bool = True):
+def setup(reduce_corpus_size: bool = True, sample_size: int = 500, proportion: float = 0.1):
     """This is a good one-time function to run to start embedding the corpus and queries and then save them to file for later use."""
     # Setup
     dataset = "trec-covid"
@@ -40,7 +40,7 @@ def setup(reduce_corpus_size: bool = True):
 
     # We're going to trim down the dataset for testing.
 
-    def reduce_corpus_size(corpus, qrels, queries, sample_size: int = 500, proportion: float = 0.05):
+    def reduce_corpus_size(corpus, qrels, queries, sample_size: int = 500, proportion: float = 0.1):
         sample_size = 500
         queries = {k:v for k,v in queries.items() if np.random.rand() < proportion}
         corpus_ids, query_ids = list(corpus), list(queries)
@@ -58,37 +58,37 @@ def setup(reduce_corpus_size: bool = True):
         return corpus, qrels, queries
     
     if reduce_corpus_size:
-        corpus, qrels, queries = reduce_corpus_size(corpus, qrels, queries, 500, 0.05)
+        corpus, qrels, queries = reduce_corpus_size(corpus, qrels, queries, sample_size, proportion)
     print("Corpus size: {} on {} queries".format(len(corpus), len(queries)))
     # It's good to save these for reproducibility
-    pickle.dump([corpus, qrels, queries], open("corpus.pkl", "wb"))
+    pickle.dump([corpus, qrels, queries], open("datasets/corpus.pkl", "wb"))
 
     #### Dense Retrieval using SBERT (Sentence-BERT) ####
     print("Beginning embedding")
     embedding_model = models.SentenceBERT("msmarco-distilbert-base-tas-b")
     from sentence_transformers import SentenceTransformer
-    embedding_model.q_model = SentenceTransformer("msmarco-distilbert-base-tas-b", device="mps") # This is just to force the pytorch device for speed reasons
+    embedding_model.q_model = SentenceTransformer("msmarco-distilbert-base-tas-b", device="cuda") # This is just to force the pytorch device for speed reasons
 
     model = DenseRetrievalExactSearch(embedding_model, batch_size=256, corpus_chunk_size=512*9999)
 
-    model.preemebed_corpus(corpus, save_path="corpus_embeddings.pt")
-    model.preembed_queries(queries, save_path="query_embeddings.pt")
+    model.preemebed_corpus(corpus, save_path="datasets/corpus_embeddings.pt")
+    model.preembed_queries(queries, save_path="datasets/query_embeddings.pt")
 
     print("Finished embedding, testing out retrieval")
     # Now we benchmark normal dense retrieval
     retriever = EvaluateRetrieval(model, score_function="cos_sim")
     benchmark_retriever(retriever, corpus, queries, qrels)
 
+# setup(reduce_corpus_size=True, sample_size=500, proportion=0.1)
 
-corpus, qrels, queries = pickle.load(open("corpus.pkl", "rb"))
-
+corpus, qrels, queries = pickle.load(open("datasets/corpus.pkl", "rb"))
 
 # Now we benchmark MPC dense retrieval
 embedding_model = models.SentenceBERT("msmarco-distilbert-base-tas-b")
-model = MPCDenseRetrievalExactSearch(embedding_model, batch_size=256, corpus_chunk_size=512*9999)
+model = MPCDenseRetrievalExactSearch(embedding_model, batch_size=256, corpus_chunk_size=512)
 
 # Load in premade embeddings
-model.load_preembeddings("corpus_embeddings.pt", "query_embeddings.pt")
+model.load_preembeddings("datasets/corpus_embeddings.pt", "datasets/query_embeddings.pt")
 
 retriever = EvaluateRetrieval(model, score_function="cos_sim")
 benchmark_retriever(retriever, corpus, queries, qrels)
