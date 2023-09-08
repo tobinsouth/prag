@@ -15,17 +15,30 @@ import logging
 logger = logging.getLogger("prag.mpc_functions")
 logger.setLevel(logging.DEBUG)
 # logger.setLevel(logging.INFO)
+# logger.setLevel(logging.INFO)
 
 # TODO: currently does not work if DIM1[0] is not 1. Something about the mag computation. Most likely because multiplying mag_A (a scalar) times mag_B (a vector) does not work if the shapes are different? Need different code most likely.
 # TODO: naive MPC accuracy doesn't work anymore? unless very small vectors
 # TODO: understand how playing with diff dimensions operates in terms of performance. Not sure why embedding dimen is sometimes relevant and sometimes isn't..
-BENCHMARK_DIM1 = (1, 1000) # query tokens, embedding dimensionality
-BENCHMARK_DIM2 = (1000, 5000) # embedding dimensionality, number of samples
+# BENCHMARK_DIM1 = (1, 1000) # query tokens, embedding dimensionality
+# BENCHMARK_DIM2 = (1000, 5000) # embedding dimensionality, number of samples
+
+BENCHMARK_DIM1 = (1000, 1) # query tokens, embedding dimensionality
+BENCHMARK_DIM2 = (1000, 1) # embedding dimensionality, number of samples
 
 #initialize crypten
 crypten.init()
 #Disables OpenMP threads -- needed by @mpc.run_multiprocess which uses fork
 torch.set_num_threads(1)
+
+'''
+Setting the fixed point precision bits. Default is 16, but increasing could help with numerical stability?
+'''
+def set_precision(bits):
+    cfg.encoder.precision_bits = bits
+
+def set_sqrt_iters(iters):
+      cfg.functions.sqrt_nr_iters = iters
 
 def relative_error(y_pred, y_true):
     return torch.mean(torch.abs(y_pred - y_true) / torch.abs(y_true))
@@ -36,6 +49,7 @@ def preprocess_cosine_similarity_mpc_naive(args) -> [torch.Tensor, torch.Tensor]
         database_vectors = args[1]
     else:
         query_vector = torch.randn(*BENCHMARK_DIM1)
+        print(query_vector)
         database_vectors = torch.randn(*BENCHMARK_DIM2)
     return [query_vector, database_vectors]
 
@@ -134,6 +148,36 @@ def dot_score_mpc(A: torch.Tensor, B: torch.Tensor) -> bytes:
 
     dot_score_binary = pickle.dumps(dot_product.get_plain_text())
     return dot_score_binary
+
+def euclidean(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+    # Compute the differences
+    diff_matrix = A - B
+    # return diff_matrix
+    # Get the euclidean norm
+    return diff_matrix.norm(dim=1)
+    # return diff_matrix.square().sum(dim=1)
+
+@mpc.run_multiprocess(world_size=2)
+def euclidean_mpc(A: torch.Tensor, B: torch.Tensor) -> bytes:
+    """
+    Computes the euclidean distance between two tensors A and B using crypten.
+    :return: The euclidean distance
+    """
+    
+    # secret-share A, B
+    A_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
+    B_enc = crypten.cryptensor(B, ptype=crypten.mpc.arithmetic)
+    
+    # Compute the differences
+    diff_matrix = A_enc - B_enc
+    euclidean_distance_binary = pickle.dumps(diff_matrix.get_plain_text())
+    # return euclidean_distance_binary
+    # Get the euclidean norm
+    # euclidean_distance = diff_matrix.square().sum(dim=1)
+    euclidean_distance = diff_matrix.norm(dim=1)
+
+    euclidean_distance_binary = pickle.dumps(euclidean_distance.get_plain_text())
+    return euclidean_distance_binary
 
 # This is much slower, like 5 times slower for k=10
 @mpc.run_multiprocess(world_size=2)
@@ -395,7 +439,7 @@ def benchmark_crypten_max(num_trials=2, size=2**10):
         logger.info(f"Errors={errs[k]}")
         logger.info(f"Average precision loss: {avg_error*100}%")
 
-def run_benchmark(func, preprocess_func, args, num_trials=5):
+def run_benchmark(func, preprocess_func, args, num_trials=5, benchmark=cosine_similarity):
     logger.info(f"Starting benchmark for func: {func}")
     ## Benchmark time
     # record the time it takes to run the function
@@ -406,7 +450,8 @@ def run_benchmark(func, preprocess_func, args, num_trials=5):
 
     for i in range(num_trials):
         new_args = preprocess_func(args)
-
+        logger.debug("Inputs:")
+        logger.debug(new_args)
         start_time = time.time()
         res_binary = func(*new_args)
         end_time = time.time()
@@ -416,7 +461,10 @@ def run_benchmark(func, preprocess_func, args, num_trials=5):
         res_mpc = pickle.loads(res_binary[0])
         # print(f"res_mpc shape = {res_mpc.shape}")
         results_mpc.append(res_mpc)
-        res = cosine_similarity(new_args[0], new_args[1].t())
+        if (benchmark==euclidean):
+            res = benchmark(new_args[0], new_args[1])
+        else:
+            res = benchmark(new_args[0], new_args[1].t())
         # print(f"res shape = {res.shape}")
         results.append(res)
 
@@ -434,6 +482,9 @@ def run_benchmark(func, preprocess_func, args, num_trials=5):
     avg_error = np.mean(errs)
     logger.info(f"Errors={errs}")
     logger.info(f"Average precision loss: {avg_error*100}%")
+
+    logger.debug(f"res_mpc: {res_mpc[:10]}")
+    logger.debug(f"res: {res[:10]}")
 
 def weird_crypten_tests():
     v = torch.randn(10, 1)
@@ -496,12 +547,16 @@ def _approx_top_k_log_reduction(enc_tensor, k, dim=None):
 if __name__ == "__main__":
     # test_stack_em_vectors()
     # bucketize_max_test()
-    benchmark_crypten_max()
+    ## benchmark_crypten_max()
 
     # cosine_sim_naive_test()
     # cosine_sim_opt_test()
     # cosine_sim_opt_test(just_dot_it=False)
-
-    # run_benchmark(cosine_similarity_mpc_naive, preprocess_cosine_similarity_mpc_naive, [], num_trials=5)
+    run_benchmark(cosine_similarity_mpc_naive, preprocess_cosine_similarity_mpc_naive, [], num_trials=5)
     # run_benchmark(cosine_similarity_mpc_opt, preprocess_cosine_similarity_mpc_naive, [], num_trials=5)
     # run_benchmark(cosine_similarity_mpc_opt2, preprocess_cosine_similarity_mpc_naive, [], num_trials=5)
+
+    # set_precision(16)
+    set_sqrt_iters(10)
+    run_benchmark(euclidean_mpc, preprocess_cosine_similarity_mpc_naive, [], num_trials=1, benchmark=euclidean)
+
