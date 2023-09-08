@@ -12,7 +12,6 @@ import numpy as np
 import math
 import logging
 
-# logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("prag.mpc_functions")
 logger.setLevel(logging.DEBUG)
 # logger.setLevel(logging.INFO)
@@ -22,9 +21,6 @@ logger.setLevel(logging.DEBUG)
 # TODO: understand how playing with diff dimensions operates in terms of performance. Not sure why embedding dimen is sometimes relevant and sometimes isn't..
 BENCHMARK_DIM1 = (1, 1000) # query tokens, embedding dimensionality
 BENCHMARK_DIM2 = (1000, 5000) # embedding dimensionality, number of samples
-
-# print(cfg.functions.max_method)
-# "pairwise"
 
 #initialize crypten
 crypten.init()
@@ -161,7 +157,6 @@ def approx_top_k_mpc(v: torch.Tensor, k: int) -> bytes | None:
 
 @mpc.run_multiprocess(world_size=2)
 def approx_top_k_multiround_mpc(v: torch.Tensor, k: int, permutations: int) -> bytes | None:
-    logger.debug(f"HEYYYYYYYYYYYYYY v.shape={v.shape}")
     vs_shuffled_list = []
     for i in range(permutations):
         vs_shuffled_list.append(v[torch.randperm(v.size(0))])
@@ -196,14 +191,6 @@ def stack_em_vectors(v: torch.Tensor, m: int):
     # Stack them up
     result_tensor = torch.stack(splitted_tensors)
     return result_tensor
-
-def test_stack_em_vectors():
-    n = 20
-    v = torch.arange(n).view(n, 1)
-    stack = stack_em_vectors(v, 5)
-    logger.debug(stack)
-    logger.debug(stack.shape)
-
 
 @mpc.run_multiprocess(world_size=2)
 def max_mpc(v: torch.Tensor) -> bytes | None:
@@ -248,33 +235,12 @@ def bucketize_and_max(v: torch.Tensor, bucket_size: int, limit: int):
 
     return curr_v.max()
 
-@mpc.run_multiprocess(world_size=2)
-def bucketize_and_max_mpc(v: torch.Tensor, bucket_size: int, limit: int, is_pairwise: bool):
-    v_enc = crypten.cryptensor(v, ptype=crypten.mpc.arithmetic)
-    N = v.size(0)
-
-    # This allows us to test the mechanism under both methods
-    if (is_pairwise):
-        method = "pairwise"
-    else:
-        method = "log_reduction"
-
-    curr_v_enc = v_enc.clone()
-    depth = 0
-    while curr_v_enc.size(0) > limit:
-        n_buckets = int(N/bucket_size)
-        logger.debug(f"depth={depth}, n_buckets={n_buckets}")
-        buckets = [curr_v_enc[i * bucket_size: (i+1) * bucket_size] for i in range(n_buckets)]
-        stack = crypten.stack(buckets)
-        with cfg.temp_override({"functions.max_method": method}):
-            curr_v_enc, _ = stack.max(dim=1)
-        depth += 1
-        N = n_buckets
-
-    with cfg.temp_override({"functions.max_method": method}):
-        max_val = curr_v_enc.max()
-
-    return pickle.dumps(max_val.get_plain_text())
+def test_stack_em_vectors():
+    n = 20
+    v = torch.arange(n).view(n, 1)
+    stack = stack_em_vectors(v, 5)
+    logger.debug(stack)
+    logger.debug(stack.shape)
 
 def cosine_sim_naive_test():
     logger.info("Running test: cosine_sim_naive_test")
@@ -352,24 +318,6 @@ def cosine_sim_opt_test(just_dot_it=True):
 
     err = relative_error(cosine_similarities2, cosine_similarities)
     logger.info(f"(Optimized) Average precision loss: {err*100}%")
-
-def bucketize_max_test():
-    logger.info("Running test: bucketize_max_test")
-
-    # Test
-    n = 2**16  # Change this value to whatever you need
-    v = torch.arange(1, n+1)
-    # v = torch.rand(16) # Assuming you're working with a 1D tensor
-    res = bucketize_and_max(v, 4, int(n**(1/4)))
-    res_binary = bucketize_and_max_mpc(v, 4, int(n**(1/4)))
-    res_mpc = pickle.loads(res_binary[0])
-    logger.debug(res)
-    logger.debug(res_mpc)
-
-    if torch.allclose(res, res_mpc, atol=0.02):
-        logger.info("They are approx equal")
-    else:
-        logger.info("They are NOT approx equal")
 
 # def benchmark_crypten_max(num_trials=3, size=1024):
 def benchmark_crypten_max(num_trials=2, size=2**10):
@@ -530,27 +478,6 @@ def _max_helper_log_reduction(enc_tensor, dim=None):
     with cfg.temp_override({"functions.max_method": "pairwise"}):
         enc_max_vec, enc_one_hot_reduced = enc_tensor_reduced.max(dim=dim_used)
     return enc_max_vec
-
-def _compute_pairwise_comparisons_for_steps2(input_tensor, dim, steps):
-    """
-    Helper function that does pairwise comparisons by splitting input
-    tensor for `steps` number of steps along dimension `dim`.
-    """
-    enc_tensor_reduced = input_tensor.clone()
-    for _ in range(steps):
-        m = enc_tensor_reduced.size(dim)
-        # x, y, remainder = enc_tensor_reduced.split([m // 2, m // 2, m % 2], dim=dim)
-        a, b, c, d, remainder = enc_tensor_reduced.split([m // 4, m // 4, m // 4, m // 4, m % 2], dim=dim)
-        stack = crypten.stack([a, b, c, d])
-        logger.debug(f"a={a.shape}, b={b.shape}, c={c.shape}, d={d.shape}, remainder={remainder.shape}, stack={stack.shape}, cfg={cfg.functions.max_method}")
-        # NOTE: this is not N^2 because it's a simple all-to-all comparison
-        # res = a >= b
-        # pairwise_max = crypten.where(res, a, b)
-        with cfg.temp_override({"functions.max_method": "pairwise"}):
-            pairwise_max, _ = stack.max(dim=1)
-        enc_tensor_reduced = crypten.cat([pairwise_max, remainder], dim=dim)
-    return enc_tensor_reduced
-
 
 def _approx_top_k_log_reduction(enc_tensor, k, dim=None):
     """Returns max along dim `dim` using the log_reduction algorithm"""
