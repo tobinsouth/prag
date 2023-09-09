@@ -77,8 +77,8 @@ def cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor) -> bytes | None:
     B_normed = B / torch.sqrt(torch.sum(B * B, dim=1, keepdim=True))
 
     # secret-share A_normed, B_normed
-    A_normed_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
-    B_normed_enc = crypten.cryptensor(B, ptype=crypten.mpc.arithmetic)
+    A_normed_enc = crypten.cryptensor(A_normed, ptype=crypten.mpc.arithmetic)
+    B_normed_enc = crypten.cryptensor(B_normed, ptype=crypten.mpc.arithmetic)
     logger.debug(f"A={A_normed_enc.shape}")
     logger.debug(f"B={B_normed_enc.shape}")
 
