@@ -11,6 +11,7 @@ import time
 import numpy as np
 import math
 from crypten.common.functions.maximum import _one_hot_to_index
+from crypten.mpc.mpc import MPCTensor
 
 
 #initialize crypten
@@ -18,35 +19,13 @@ crypten.init()
 #Disables OpenMP threads -- needed by @mpc.run_multiprocess which uses fork
 torch.set_num_threads(1)
 
-
-
-def cosine_similarity_mpc_naive(A: torch.Tensor, B: torch.Tensor) -> bytes | None:
-    """
-    Computes the cosine similarity between two tensors A and B using crypten. The magnitude of A and B are computed in-function.
-    """
-    # secret-share A, B
-    A_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
-    B_enc = crypten.cryptensor(B, ptype=crypten.mpc.arithmetic)
-
-    dot_product = A_enc.matmul(B_enc)
-
-    # Compute the magnitudes of A and B
-    mag_A_enc = (A_enc * A_enc).sum(dim=1, keepdim=True).sqrt()
-    mag_B_enc = (B_enc * B_enc).sum(dim=0, keepdim=True).sqrt()
-
-    # Compute the cosine similarity
-    cosine_sim = (dot_product / (mag_A_enc * mag_B_enc)).get_plain_text()
-    
-    cosine_sim_binary = pickle.dumps(cosine_sim)
-    return cosine_sim_binary
-
 def preprocess_cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor) -> [torch.Tensor, torch.Tensor]:
     """A helper function before calling cosine_similarity_mpc_pass_in_mags. Precomputes the magnitudes of A and B, and their reciprocals."""
     A_mag_recip = torch.sqrt(torch.sum(A * A, dim=1, keepdim=True))**(-1)
     B_mag_recip = torch.sqrt(torch.sum(B * B, dim=0, keepdim=True))**(-1)
     return [A_mag_recip, B_mag_recip]
 
-def cosine_similarity_mpc_pass_in_mags(A: torch.Tensor, B: torch.Tensor, A_mag_recip: torch.Tensor, B_mag_recip: torch.Tensor) -> bytes | None:
+def cosine_similarity_mpc_pass_in_mags(A: torch.Tensor, B: torch.Tensor, A_mag_recip: torch.Tensor, B_mag_recip: torch.Tensor) -> MPCTensor:
     """
     Computes the cosine similarity between two tensors A and B using crypten. The magnitude of A and B are pre-computed and passed in (different from cosine_similarity_mpc_naive).
 
@@ -65,11 +44,10 @@ def cosine_similarity_mpc_pass_in_mags(A: torch.Tensor, B: torch.Tensor, A_mag_r
     dot_product = A_enc.matmul(B_enc)
     cosine_sim = (dot_product * (A_mag_recip_enc * B_mag_recip_enc))
 
-    cosine_sim_binary = pickle.dumps(cosine_sim.get_plain_text())
-    return cosine_sim_binary
+    return cosine_sim
 
 
-def cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor) -> bytes | None:
+def cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor) -> MPCTensor:
     """
     Pre-normalizes for efficiency.
     This is secure because the user owns A and can do this locally, and the parties can jointly pre-process norm(B)
@@ -86,10 +64,9 @@ def cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor) -> bytes | None:
     # Compute the dot product of A and B
     cosine_sim = A_normed_enc.matmul(B_normed_enc)
 
-    cosine_sim_binary = pickle.dumps(cosine_sim.get_plain_text())
-    return cosine_sim_binary
+    return cosine_sim
 
-def cosine_similarity_mpc_opt2(A: torch.Tensor, B: torch.Tensor) -> bytes | None:
+def cosine_similarity_mpc_opt2(A: torch.Tensor, B: torch.Tensor) -> MPCTensor:
     """
     The magnitude of A and B are calculated in MPC.
     """
@@ -104,12 +81,10 @@ def cosine_similarity_mpc_opt2(A: torch.Tensor, B: torch.Tensor) -> bytes | None
 
     # Compute the dot product of A and B
     dot_product = A_enc.matmul(B_enc)
-    cosine_sim = (dot_product * (A_mag_recip_enc * B_mag_recip_enc)).get_plain_text()
-    
-    cosine_sim_binary = pickle.dumps(cosine_sim)
-    return cosine_sim_binary
+    cosine_sim = (dot_product * (A_mag_recip_enc * B_mag_recip_enc))
+    return cosine_sim
 
-def dot_score_mpc(A: torch.Tensor, B: torch.Tensor) -> bytes:
+def dot_score_mpc(A: torch.Tensor, B: torch.Tensor) -> MPCTensor:
     """
     Computes the dot-product dot_prod(a[i], b[j]) for all i and j.
     :return: Matrix with res[i][j]  = dot_prod(a[i], b[j])
@@ -120,16 +95,14 @@ def dot_score_mpc(A: torch.Tensor, B: torch.Tensor) -> bytes:
 
     # Compute the dot product of A and B
     dot_product = A_enc.matmul(B_enc)
+    return dot_product
 
-    dot_score_binary = pickle.dumps(dot_product.get_plain_text())
-    return dot_score_binary
-
-def euclidean_mpc(A: torch.Tensor, B: torch.Tensor) -> bytes:
+def euclidean_mpc(A: torch.Tensor, B: torch.Tensor) -> MPCTensor:
     """
     Computes the euclidean distance between two tensors A and B using crypten.
     :return: The euclidean distance without having square rooted it.
 
-    Expalantion of missing sqrt: crypten  
+    Explanation of missing sqrt: crypten  
     """
     
     # secret-share A, B
@@ -143,18 +116,17 @@ def euclidean_mpc(A: torch.Tensor, B: torch.Tensor) -> bytes:
     # euclidean_distance = diff_matrix.norm(dim=1)
     euclidean_distance = diff_matrix.square().sum(dim=1)
 
-    euclidean_distance_binary = pickle.dumps(euclidean_distance.get_plain_text())
-    return euclidean_distance_binary
+    return euclidean_distance
 
 
 # Now we deal with top-k & max calculations
 
-def argmax_mpc_tobin(v: torch.Tensor) -> bytes | None:
+def argmax_mpc_tobin(v: torch.Tensor) -> bytes:
     v_enc = crypten.cryptensor(v, ptype=crypten.mpc.arithmetic)
     res = v_enc.argmax(one_hot=False)
     return pickle.dumps(res.get_plain_text())
 
-def top_k_mpc_tobin(v: torch.Tensor, k: int) -> bytes | None:
+def top_k_mpc_tobin(v: torch.Tensor, k: int) -> bytes:
     v_enc = crypten.cryptensor(v, ptype=crypten.mpc.arithmetic)
     top_k = []
     for i in range(k):
@@ -190,10 +162,39 @@ def tobin_top_k_mpc_return_embedding_vectors(v: torch.Tensor, k: int, B: torch.T
 
 from functools import wraps
 def dectorate_mpc(func):
+    """This is a simple wrapped function that will return the exact same function but wrapped in mpc.run_multiprocess(world_size=2). ` @wraps(func)` serves to keep function metadata.
+    """
     @wraps(func)
-    def wrapped(*args, **kwargs):
+    def wrapped_to_multiprocess(*args, **kwargs):
         return func(*args, **kwargs)
-    return mpc.run_multiprocess(world_size=2)(wrapped)
+    return mpc.run_multiprocess(world_size=2)(wrapped_to_multiprocess)
+
+
+# When we use a function on it's own we don't want it to return the pickle, so when we're testing solo functions, we wrap them so they return binary to us for processing.
+
+def handle_binary(func, mpc=False):
+    """This function takes in any crypten function that returns an MPCTensor and returns a *function* that handles the decryption and returns the result as normal torch tensor. This is done in two stages, first by call pickling the result of get_plain_text() on the MPCTensor (done inside MPC), and then by unpickling the result."""
+
+    def decrypt_result(func, mpc):
+        """ This function will handle the final crypten step of decrypting the result and returning it as binary. """
+        @wraps(func)
+        def wrapped_to_pickle(*args, **kwargs):
+            return pickle.dumps(func(*args, **kwargs).get_plain_text())
+        return dectorate_mpc(wrapped_to_pickle) if mpc else wrapped_to_pickle
+
+    pickled_function = decrypt_result(func, mpc)
+
+    if mpc:
+        @wraps(func)
+        def wrapped_to_unpickle(*args, **kwargs):
+            return pickle.loads(pickled_function(*args, **kwargs)[0])
+    else:
+        @wraps(func)
+        def wrapped_to_unpickle(*args, **kwargs):
+            return pickle.loads(pickled_function(*args, **kwargs))
+
+    return wrapped_to_unpickle
+
 
 # We now want to make a wrapper that combines the distance calculation with the top-k calculation and wraps in. It will take in a top_k function and a distance function and return a new function that does both after being wrapped in dectorate_mpc.
 
