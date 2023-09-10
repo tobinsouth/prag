@@ -195,3 +195,25 @@ def dectorate_mpc(func):
         return func(*args, **kwargs)
     return mpc.run_multiprocess(world_size=2)(wrapped)
 
+# We now want to make a wrapper that combines the distance calculation with the top-k calculation and wraps in. It will take in a top_k function and a distance function and return a new function that does both after being wrapped in dectorate_mpc.
+
+def mpc_distance_top_k(distance_func, top_k_func):
+    """
+    Creates a function that calculates distances between tensors A and B using `distance_func` and
+    then finds the top-k indices using `top_k_func`. The returned function is wrapped for MPC.
+    
+    Args:
+    - distance_func: function to compute the distance between tensors
+    - top_k_func: function to compute the top-k indices/values
+    
+    Returns:
+    A function that first computes distance and then gets the top-k results.
+    """
+
+    @dectorate_mpc
+    def mpc_distance_and_top_k(A: torch.Tensor, B: torch.Tensor, k: int) -> bytes:
+        distance_results = distance_func(A, B)
+        top_k_results = top_k_func(distance_results, k)
+        return top_k_results
+
+    return mpc_distance_and_top_k
