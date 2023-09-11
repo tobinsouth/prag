@@ -74,7 +74,7 @@ def cosine_similarity_mpc_opt2(A: torch.Tensor, B: torch.Tensor) -> MPCTensor:
     A_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
     B_enc = crypten.cryptensor(B, ptype=crypten.mpc.arithmetic)
 
-    A_mag_recip = torch.sqrt(torch.sum(A * A, dim=1, keepdim=True))**(-1)
+    A_mag_recip = torch.sqrt(torch.sum(A * A, dim=0, keepdim=True))**(-1)
     B_mag_recip = torch.sqrt(torch.sum(B * B, dim=0, keepdim=True))**(-1)
     A_mag_recip_enc = crypten.cryptensor(A_mag_recip, ptype=crypten.mpc.arithmetic)
     B_mag_recip_enc = crypten.cryptensor(B_mag_recip, ptype=crypten.mpc.arithmetic)
