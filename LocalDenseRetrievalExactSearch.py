@@ -16,7 +16,7 @@ class DenseRetrievalExactSearch(BaseSearch):
         #model is class that provides encode_corpus() and encode_queries()
         self.model = model
         self.batch_size = batch_size
-        self.score_functions = {'cos_sim': cos_sim, 'dot': dot_score}
+        self.score_functions = {'cos_sim': self.default_cos_topk, 'dot_score':self.default_dot_topk}
         self.corpus_chunk_size = corpus_chunk_size
         self.show_progress_bar = kwargs.get("show_progress_bar", True)
         self.convert_to_tensor = kwargs.get("convert_to_tensor", True)
@@ -76,6 +76,11 @@ class DenseRetrievalExactSearch(BaseSearch):
                score_function: str,
                return_sorted: bool = False, 
                **kwargs) -> Dict[str, Dict[str, float]]:
+        """
+        This function is a reworked version of the original `search` function from `beir.retrieval.search.dense.DenseRetrievalExactSearch`. The original function would do the embedding of the corpus on every call of the `search` function. This function instead uses the pre-embedded corpus and queries to calculate the similarity measures.
+
+        Further, this function now does each query in sequence rather than as a bunch to make it easier to compare the MPC functions (top-k) with others.
+        """
 
         print("Running")
         if score_function not in self.score_functions:
@@ -84,12 +89,12 @@ class DenseRetrievalExactSearch(BaseSearch):
         if self.query_embeddings is not None:
             query_embeddings = self.query_embeddings
         else:
-             print('You have not pre-embedded the queries. Please run preembed_queries() or load_preembeddings()  first or use the original BEIR code.')
+             raise RuntimeError('You have not pre-embedded the queries. Please run preembed_queries() or load_preembeddings()  first or use the original BEIR code.')
          
         if self.corpus_embeddings is not None:
             corpus_embeddings = self.corpus_embeddings
         else:
-            print('You have not pre-embedded the corpus. Please run preembed_corpus() or load_preembeddings() first or use the original BEIR code.')
+            raise RuntimeError('You have not pre-embedded the corpus. Please run preembed_corpus() or load_preembeddings() first or use the original BEIR code.')
 
         query_ids = list(queries.keys())
         self.results = {qid: {} for qid in query_ids}
@@ -99,35 +104,21 @@ class DenseRetrievalExactSearch(BaseSearch):
         corpus = [corpus[cid] for cid in corpus_ids]
 
         itr = range(0, len(corpus), self.corpus_chunk_size)
-        
+
         result_heaps = {qid: [] for qid in query_ids}  # Keep only the top-k docs for each query
         for batch_num, corpus_start_idx in enumerate(itr):
             print("Encoding Batch {}/{}...".format(batch_num+1, len(itr)))
             corpus_end_idx = min(corpus_start_idx + self.corpus_chunk_size, len(corpus))
 
-            # # Encode chunk of corpus    
-            # sub_corpus_embeddings = self.model.encode_corpus(
-            #     corpus[corpus_start_idx:corpus_end_idx],
-            #     batch_size=self.batch_size,
-            #     show_progress_bar=self.show_progress_bar, 
-            #     convert_to_tensor = self.convert_to_tensor
-            #     )
-            
             # Get chunk of corpus embeddings
             sub_corpus_embeddings = corpus_embeddings[corpus_start_idx:corpus_end_idx]
 
-            # Compute similarites using either cosine-similarity or dot product
-            cos_scores = self.score_functions[score_function](query_embeddings, sub_corpus_embeddings)
-            cos_scores[torch.isnan(cos_scores)] = -1
+            for query_itr, query_embedding in enumerate(query_embeddings):
 
-            # Get top-k values
-            cos_scores_top_k_values, cos_scores_top_k_idx = torch.topk(cos_scores, min(top_k+1, len(cos_scores[1])), dim=1, largest=True, sorted=return_sorted)
-            cos_scores_top_k_values = cos_scores_top_k_values.cpu().tolist()
-            cos_scores_top_k_idx = cos_scores_top_k_idx.cpu().tolist()
-            
-            for query_itr in range(len(query_embeddings)):
+                top_k_values, top_k_idx  = self.score_functions[score_function](query_embedding, sub_corpus_embeddings, top_k+1)
+
                 query_id = query_ids[query_itr]                  
-                for sub_corpus_id, score in zip(cos_scores_top_k_idx[query_itr], cos_scores_top_k_values[query_itr]):
+                for sub_corpus_id, score in zip(top_k_idx, top_k_values):
                     corpus_id = corpus_ids[corpus_start_idx+sub_corpus_id]
                     if corpus_id != query_id:
                         if len(result_heaps[query_id]) < top_k:
@@ -142,3 +133,24 @@ class DenseRetrievalExactSearch(BaseSearch):
                 self.results[qid][corpus_id] = score
         
         return self.results 
+    
+    def topk_vanilla(self, distance_vector, k):
+        # Get top-k values
+        top_k_values, top_k_idx = torch.topk(distance_vector, k=k, dim=1, largest=True, sorted=True)
+        top_k_values = top_k_values.squeeze(0).cpu().tolist()
+        top_k_idx = top_k_idx.squeeze(0).cpu().tolist()
+        return top_k_values, top_k_idx
+
+    def default_cos_topk(self, query_embedding, sub_corpus_embeddings, k):
+        # Compute similarites using either cosine-similarity or dot product
+        cos_scores = cos_sim(query_embedding, sub_corpus_embeddings)
+        cos_scores[torch.isnan(cos_scores)] = -1
+        return self.topk_vanilla(cos_scores, k)
+    
+    def default_dot_topk(self, query_embedding, sub_corpus_embeddings, k):
+        dot_scores = dot_score(query_embedding, sub_corpus_embeddings)
+        return self.topk_vanilla(dot_scores, k)
+    
+    def default_euclidean_topk(self, query_embedding, sub_corpus_embeddings, k):
+        euclidean_distance = torch.norm(query_embedding - sub_corpus_embeddings, dim=1)
+        return self.topk_vanilla(euclidean_distance, k)
