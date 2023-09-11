@@ -19,16 +19,20 @@ def benchmark_retriever(retriever, corpus, queries, qrels):
     start_time = time.time()
     results = retriever.retrieve(corpus, queries)
     end_time = time.time()
-    # print("Time taken to retrieve: {:.2f} seconds".format(end_time - start_time))
-    #### Evaluate your retrieval using NDCG@k, MAP@K ...
-    # logging.info("Retriever evaluation for k in: {}".format(retriever.k_values))
-    ndcg, _map, recall, precision = retriever.evaluate(qrels, results, retriever.k_values)
-    mrr = retriever.evaluate_custom(qrels, results, retriever.k_values, metric="mrr")
-    recall_cap = retriever.evaluate_custom(qrels, results, retriever.k_values, metric="r_cap")
-    hole = retriever.evaluate_custom(qrels, results, retriever.k_values, metric="hole")
-    # print("Performance of DenseRetrievalExactSearch: {recall}, {precision}, {ndcg}, {map}, {mrr}, {recall_cap}, {hole}".format(recall=recall, precision=precision, ndcg=ndcg, map=_map, mrr=mrr, recall_cap=recall_cap, hole=hole))
-    print("Time taken: {:.2f} Recall@1: {}, Recall@10: {}".format(end_time-start_time, recall['Recall@1'], recall['Recall@10']))
-    return end_time-start_time, recall, precision, ndcg, mrr, recall_cap, hole
+    try:
+        # print("Time taken to retrieve: {:.2f} seconds".format(end_time - start_time))
+        #### Evaluate your retrieval using NDCG@k, MAP@K ...
+        # logging.info("Retriever evaluation for k in: {}".format(retriever.k_values))
+        ndcg, _map, recall, precision = retriever.evaluate(qrels, results, retriever.k_values)
+        mrr = retriever.evaluate_custom(qrels, results, retriever.k_values, metric="mrr")
+        recall_cap = retriever.evaluate_custom(qrels, results, retriever.k_values, metric="r_cap")
+        hole = retriever.evaluate_custom(qrels, results, retriever.k_values, metric="hole")
+        # print("Performance of DenseRetrievalExactSearch: {recall}, {precision}, {ndcg}, {map}, {mrr}, {recall_cap}, {hole}".format(recall=recall, precision=precision, ndcg=ndcg, map=_map, mrr=mrr, recall_cap=recall_cap, hole=hole))
+        print("Time taken: {:.2f} Recall@1: {}, Recall@5: {}".format(end_time-start_time, recall['Recall@1'], recall.get('Recall@5', np.NaN)))
+    except:
+        print("Time taken: {:.2f}".format(end_time-start_time))
+        return end_time-start_time, None, None, None, None, None, None, results
+    return end_time-start_time, recall, precision, ndcg, mrr, recall_cap, hole, results
 
 def setup(reduce_corpus_size: bool = True, sample_size: int = 500, proportion: float = 0.1):
     """This is a good one-time function to run to start embedding the corpus and queries and then save them to file for later use."""
@@ -80,19 +84,25 @@ def setup(reduce_corpus_size: bool = True, sample_size: int = 500, proportion: f
     retriever = EvaluateRetrieval(model, score_function="cos_sim")
     benchmark_retriever(retriever, corpus, queries, qrels)
 
-setup(reduce_corpus_size=False, sample_size=500, proportion=0.1)
+# setup(reduce_corpus_size=False, sample_size=500, proportion=0.1)
 
-corpus, qrels, queries = pickle.load(open("datasets/corpus.pkl", "rb"))
+corpus, qrels, queries = pickle.load(open("datasets/corpus_large.pkl", "rb"))
 
 # Now we benchmark MPC dense retrieval
 model = MPCDenseRetrievalExactSearch(None, corpus_chunk_size=512*6)
 
 # Load in premade embeddings
-model.load_preembeddings("datasets/corpus_embeddings.pt", "datasets/query_embeddings.pt")
+model.load_preembeddings("datasets/corpus_embeddings_large.pt", "datasets/query_embeddings_large.pt")
 
 # Test the basic
-retriever = EvaluateRetrieval(model, score_function="cos_sim",  k_values=[1,3,5,10])
+retriever = EvaluateRetrieval(model, score_function="cos_sim",  k_values=[1,3,5])
 timetaken, recall, *the_rest =benchmark_retriever(retriever, corpus, queries, qrels)
+
+
+# test the advanced
+retriever = EvaluateRetrieval(model, score_function="mpc_dot_vanilla_topk",  k_values=[1,3,5])
+timetaken, recall, *the_rest =benchmark_retriever(retriever, corpus, queries, qrels)
+
 
 # test the advanced
 retriever = EvaluateRetrieval(model, score_function="mpc_dot_topk",  k_values=[1,3,5])
