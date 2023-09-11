@@ -1,7 +1,7 @@
 from LocalDenseRetrievalExactSearch import DenseRetrievalExactSearch
 from  beir.util import cos_sim, dot_score
 import logging
-from mpc_functions import cosine_similarity_mpc_naive, cosine_similarity_mpc_opt, preprocess_cosine_similarity_mpc_opt, dot_score_mpc
+from mpc_functions_stable import *
 import torch, pickle
 
 logger = logging.getLogger(__name__)
@@ -13,35 +13,45 @@ class MPCDenseRetrievalExactSearch(DenseRetrievalExactSearch):
     """
     def __init__(self, model, batch_size: int = 128, corpus_chunk_size: int = 50000, **kwargs):
         super().__init__(model, batch_size, corpus_chunk_size, **kwargs) # This is just constructing the parent
-        self.score_functions = {'cos_sim': cos_sim, 'dot': dot_score, 'mpc_opt': self.mpc_opt, 'mpc_naive': self.mpc_naive, 'mpc_dot': self.mpc_dot}
+        self.score_functions.update({'mpc_dot_vanilla_topk':self.mpc_dot_vanilla_topk, 'mpc_cos_vanilla_topk':self.mpc_cos_vanilla_topk, 'mpc_cos2_vanilla_topk':self.mpc_cos2_vanilla_topk, 'mpc_eucld_vanilla_topk':self.mpc_eucld_vanilla_topk, 'mpc_dot_topk':self.mpc_dot_topk, 'mpc_cos_topk':self.mpc_cos_topk, 'mpc_cos2_topk':self.mpc_cos2_topk, 'mpc_eucld_topk':self.mpc_eucld_topk})
 
-    def mpc_naive(self, query_embeddings, sub_corpus_embeddings):
-        # NOTE: This is a naive implementation of MPC. It does not use the precomputed magnitudes of the vectors, and instead computes them on the fly. 
-
-        # query_vector = torch.tensor(query_vector, dtype=torch.float32).t()
-        # database_vectors = torch.tensor(database_vectors, dtype=torch.float32)
-
-        cosine_sim_binary = cosine_similarity_mpc_naive(query_embeddings, sub_corpus_embeddings.t())
-        cosine_sim = pickle.loads(cosine_sim_binary[0]) # remove [0] for single threaded
-
-        # # Include for debugging
-        # default_cos_sim = cos_sim(query_embeddings, sub_corpus_embeddings)
-        # print("All close: ", torch.allclose(default_cos_sim, cosine_sim, atol=0.02))
-
-        return cosine_sim
-
-
-
-    def mpc_opt(self, query_embeddings, sub_corpus_embeddings):
-        
-        query_vector, database_vectors, qv_mag_recip, db_mag_recip = preprocess_cosine_similarity_mpc_opt([query_embeddings, sub_corpus_embeddings.t()])
-
-        cosine_sim_binary = cosine_similarity_mpc_opt(query_vector, database_vectors, qv_mag_recip, db_mag_recip)
-        cosine_sim = pickle.loads(cosine_sim_binary[0]) # remove [0] for single threaded
-
-        return cosine_sim
+    def mpc_dot_vanilla_topk(self, query_embedding, sub_corpus_embeddings, k):
+        dot_score_res = handle_binary(dot_score_mpc, mpc=True)(query_embedding, sub_corpus_embeddings.t()).unsqueeze(0)
+        return self.topk_vanilla(dot_score_res, k)
     
-    def mpc_dot(self, query_embeddings, sub_corpus_embeddings):
-        dot_score_binary = dot_score_mpc(query_embeddings, sub_corpus_embeddings.t())
-        dot_score_res = pickle.loads(dot_score_binary[0]) # remove [0] for single threaded
-        return dot_score_res
+    def mpc_cos_vanilla_topk(self, query_embedding, sub_corpus_embeddings, k):
+        cos_score_res = handle_binary(cosine_similarity_mpc_opt, mpc=True)(query_embedding, sub_corpus_embeddings.t()).unsqueeze(0)
+        return self.topk_vanilla(cos_score_res, k)
+    
+    def mpc_cos2_vanilla_topk(self, query_embedding, sub_corpus_embeddings, k):
+        cos_score_res = handle_binary(cosine_similarity_mpc_opt2, mpc=True)(query_embedding, sub_corpus_embeddings.t()).unsqueeze(0)
+        return self.topk_vanilla(cos_score_res, k)
+    
+    def mpc_eucld_vanilla_topk(self, query_embedding, sub_corpus_embeddings, k):
+        eucld_score_res = handle_binary(euclidean_mpc, mpc=True)(query_embedding, sub_corpus_embeddings.t()).sqrt().unsqueeze(0)
+        return self.topk_vanilla(eucld_score_res, k)
+
+    def mpc_dot_topk(self, query_embedding, sub_corpus_embeddings, k):
+        distance_and_top_k_func = mpc_distance_top_k_with_distance_func(dot_score_mpc)
+        crypten_binary = distance_and_top_k_func(query_embedding, sub_corpus_embeddings.t(), k)
+        top_k_idx, top_k_values = pickle.loads(crypten_binary[0])
+        return top_k_values.cpu().tolist(), top_k_idx.cpu().tolist()
+    
+    def mpc_cos_topk(self, query_embedding, sub_corpus_embeddings, k):
+        distance_and_top_k_func = mpc_distance_top_k_with_distance_func(cosine_similarity_mpc_opt)
+        crypten_binary = distance_and_top_k_func(query_embedding, sub_corpus_embeddings.t(), k)
+        top_k_idx, top_k_values = pickle.loads(crypten_binary[0])
+        return top_k_values.cpu().tolist(), top_k_idx.cpu().tolist()
+    
+    def mpc_cos2_topk(self, query_embedding, sub_corpus_embeddings, k):
+        distance_and_top_k_func = mpc_distance_top_k_with_distance_func(cosine_similarity_mpc_opt2)
+        crypten_binary = distance_and_top_k_func(query_embedding, sub_corpus_embeddings.t(), k)
+        top_k_idx, top_k_values = pickle.loads(crypten_binary[0])
+        return top_k_values.cpu().tolist(), top_k_idx.cpu().tolist()
+    
+    def mpc_eucld_topk(self, query_embedding, sub_corpus_embeddings, k):
+        distance_and_top_k_func = mpc_distance_top_k_with_distance_func(euclidean_mpc)
+        crypten_binary = distance_and_top_k_func(query_embedding, sub_corpus_embeddings.t(), k)
+        top_k_idx, top_k_values = pickle.loads(crypten_binary[0])
+        return top_k_values.cpu().tolist(), top_k_idx.cpu().tolist()
+        
