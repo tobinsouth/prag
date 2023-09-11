@@ -3,7 +3,10 @@ import torch
 import torch.nn.functional as F
 from sklearn.cluster import KMeans
 import pandas as pd
-import pickle
+from collections import defaultdict
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
 
 class SimpleRetrievalModel:
     
@@ -60,8 +63,8 @@ class KMeansRetrievalModel(SimpleRetrievalModel):
     def train(self, database: torch.Tensor):
         self.database = database
         
-        # kmeans = KMeans(n_clusters=self.n_clusters, random_state=42).fit(database.cpu().numpy()) # reproducibile
-        kmeans = KMeans(n_clusters=self.n_clusters).fit(database.cpu().numpy())
+        kmeans = KMeans(n_clusters=self.n_clusters, random_state=42).fit(database.cpu().numpy()) # reproducibile
+        # kmeans = KMeans(n_clusters=self.n_clusters).fit(database.cpu().numpy())
         
         self.clusters = torch.tensor(kmeans.cluster_centers_)
         self.clusters_map = {i: [] for i in range(self.n_clusters)}
@@ -96,8 +99,118 @@ class KMeansRetrievalModel(SimpleRetrievalModel):
 
         return mapped_indices, top_k_values
 
+class KMeansRecursiveRetrievalModel(SimpleRetrievalModel):
+
+    def __init__(self, n_clusters: int, m: int, depth: int, distance_func: str = 'cos_sim', **kwargs):
+        super().__init__(distance_func=distance_func, **kwargs)
+        self.n_clusters = n_clusters
+        self.m = m
+        self.depth = depth
+        self.all_clusters = []
+        self.remainder = None
+
+    def _compute_scores(self, A, B):
+        """Compute distance or similarity scores between two sets of vectors A and B."""
+        if self.distance_func == 'cos_sim':
+            A_norm = F.normalize(A, p=2, dim=1)
+            B_norm = F.normalize(B, p=2, dim=0)
+            scores = torch.mm(A_norm, B_norm.unsqueeze(0).t()).squeeze()
+        elif self.distance_func == 'dot_prod':
+            scores = torch.mm(A, B.unsqueeze(0).t()).squeeze()
+        elif self.distance_func == 'euclidean':
+            scores = torch.norm(A - B, p=2, dim=1)
+        else:
+            logger.error(f"Unsupported distance function: {self.distance_func}")
+            return None
+        
+        return scores
+
+    def bucketize_with_kmeans(self, data):
+        # kmeans = KMeans(n_clusters=min(self.n_clusters, len(data))).fit(data.cpu().numpy())
+        kmeans = KMeans(n_clusters=min(self.n_clusters, len(data)), random_state=42).fit(data.cpu().numpy()) # reproducible
+        clusters = torch.tensor(kmeans.cluster_centers_)
+        clusters_map = {i: [] for i in range(len(clusters))}
+        for i, label in enumerate(kmeans.labels_):
+            clusters_map[label].append(i)
+        return clusters, clusters_map
+
+    def train(self, database: torch.Tensor):
+        self.database = database
+        data_to_split = database
+        data_indices_to_split = list(range(len(database)))
+
+        for d in range(self.depth - 1):
+            clusters, clusters_map = self.bucketize_with_kmeans(data_to_split)
+            self.all_clusters.append((clusters, clusters_map))
+            next_data_to_split = []
+            next_data_indices_to_split = []
+
+            for i, indices in clusters_map.items():
+                if len(indices) > self.m:
+                    logger.debug(f"Depth {d+1}, Splitting cluster {i} with {len(indices)} items")
+                    
+                    # Keep m items in the current cluster and take the rest out for further splitting
+                    retained_indices = indices[:self.m]
+                    to_split_indices = indices[self.m:]
+
+                    clusters_map[i] = retained_indices
+                    next_data_to_split.extend(data_to_split[to_split_indices].tolist())
+                    next_data_indices_to_split.extend([data_indices_to_split[index] for index in to_split_indices])
+
+            if not next_data_to_split:
+                break
+
+            data_to_split = torch.tensor(next_data_to_split)
+            data_indices_to_split = next_data_indices_to_split
+
+        # Handling the remainder
+        remaining_indices = []
+        last_clusters_map = self.all_clusters[-1][1]
+        for cluster_id, indices in last_clusters_map.items():
+            if len(indices) > self.m:
+                remaining_indices.extend(indices[self.m:])
+                last_clusters_map[cluster_id] = indices[:self.m]
+
+        if remaining_indices:
+            self.remainder = database[remaining_indices]
+            self.all_clusters.append(self.bucketize_with_kmeans(self.remainder))
+            logger.debug(f"Moved {len(self.remainder)} items to the remainder database")
+
+
+    def query(self, query: torch.Tensor, top_k: int=10, n_clusters_to_search: int=10):
+        all_candidates_indices = []
+        total_clusters_searched = 0
+        total_sim_computed = 0
+
+        for clusters, clusters_map in self.all_clusters:
+            scores = self._compute_scores(clusters, query)
+            total_sim_computed += len(clusters)
+            if self.distance_func in ['cos_sim', 'dot_prod']:
+                scores = -scores
+            _, top_clusters = torch.topk(scores, k=n_clusters_to_search)
+            total_clusters_searched += len(top_clusters)
+            candidates_indices = [clusters_map[cluster.item()] for cluster in top_clusters]
+            all_candidates_indices.extend(sorted([idx for sublist in candidates_indices for idx in sublist]))
+
+        # Querying the remainder if it exists
+        if self.remainder is not None:
+            scores_remainder = self._compute_scores(self.remainder, query)
+            total_sim_computed += len(self.remainder)
+            _, top_clusters_remainder = torch.topk(scores_remainder, k=n_clusters_to_search)
+            total_clusters_searched += len(top_clusters_remainder)
+            all_candidates_indices.extend(top_clusters_remainder.tolist())
+
+        candidates = self.database[all_candidates_indices]
+        local_indices, top_k_values = super().query(query, top_k=top_k, database=candidates)
+        mapped_indices = torch.tensor([all_candidates_indices[idx] for idx in local_indices])
+
+        logger.debug(f"Total clusters searched: {total_clusters_searched}")
+        logger.debug(f"Total similarities computed: {total_sim_computed}")
+
+        return mapped_indices, top_k_values
+
 def benchmark(query: torch.Tensor, database: torch.Tensor=None, model=None, top_k: int=10, train_params={}, query_params={}):
-    
+
     # If database tensor doesn't exist, initialize it at random
     if database is None:
         database = torch.randn(100, 50)
@@ -122,7 +235,7 @@ def benchmark(query: torch.Tensor, database: torch.Tensor=None, model=None, top_
         print("No secondary model provided!")
         return
     
-    # New code for logging cluster mapping for ground truth
+    # Update to report clusters
     total_count = 0
     if model == KMeansRetrievalModel:
         cluster_counts = {i: 0 for i in range(model_instance.n_clusters)}
@@ -134,8 +247,20 @@ def benchmark(query: torch.Tensor, database: torch.Tensor=None, model=None, top_
                     break
 
         for cluster, count in cluster_counts.items():
-            print(f'cluster {cluster}={count} top_k items')
-        print(f'Total top k found in all clusters: {total_count}')
+            logger.debug(f'cluster {cluster}={count} top_k items')
+        logger.debug(f'Total top k found in all clusters: {total_count}')
+    elif model == KMeansRecursiveRetrievalModel:
+        for depth, (clusters, clusters_map) in enumerate(model_instance.all_clusters):
+            for cluster_id, items in clusters_map.items():
+                curr_matches = len(gt_set.intersection(set(items)))
+                total_count += curr_matches
+                logger.debug(f"Depth {depth}, Cluster {cluster_id}={len(items)} items and top_k={curr_matches} items")
+                # logger.debug(f"Depth {depth}, Cluster {cluster_id}={len(items)} items")
+        if model_instance.remainder is not None:
+            curr_matches = len(gt_set.intersection(set(model_instance.remainder.tolist())))
+            total_count += curr_matches
+            logger.debug(f"Remainder={len(model_instance.remainder)} items and top_k={curr_matches} items")
+        logger.debug(f'Total top k found in all clusters (recursive): {total_count}')
     
     # Calculate metrics
     intersection = gt_set.intersection(pred_set)
@@ -182,24 +307,24 @@ def load_preembeddings(corpus_path: str, queries_path: str) -> None:
     query_embeddings = torch.load(queries_path, map_location=torch.device('cpu')).to('cpu')
     return query_embeddings, corpus_embeddings
 
-# Example Usage
-query_tensor = torch.randn(50)
-# torch.manual_seed(42)  # Ensures reproducibility
-database_tensor = torch.randn(1000, 50)
-print(f"Benchmarking on random data")
-benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=50, train_params={'n_clusters': 100}, query_params={'n_clusters_to_search': 10})
+# # Example Usage
+# query_tensor = torch.randn(50)
+# # torch.manual_seed(42)  # Ensures reproducibility
+# database_tensor = torch.randn(1000, 50)
+# print(f"Benchmarking on random data")
+# benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=50, train_params={'n_clusters': 100, 'm': 10, 'depth': 2}, query_params={'n_clusters_to_search': 10})
 
-# Read data and check
-print(f"Benchmarking on real data (small)")
-query_tensor = pd.read_csv('datasets/query_vector.csv').values
-database_tensor = pd.read_csv('datasets/D.csv').values
+# # Read data and check
+# print(f"Benchmarking on real data (small)")
+# query_tensor = pd.read_csv('datasets/query_vector.csv').values
+# database_tensor = pd.read_csv('datasets/D.csv').values
 
-# Convert the data to PyTorch tensors
-query_tensor = torch.tensor(query_tensor, dtype=torch.float32).flatten()
-database_tensor = torch.tensor(database_tensor, dtype=torch.float32).t()
-print(f"Query tensor shape: {query_tensor.shape}")
-print(f"Database tensor shape: {database_tensor.shape}")
-benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=10, train_params={'n_clusters': 9}, query_params={'n_clusters_to_search': 3})
+# # Convert the data to PyTorch tensors
+# query_tensor = torch.tensor(query_tensor, dtype=torch.float32).flatten()
+# database_tensor = torch.tensor(database_tensor, dtype=torch.float32).t()
+# print(f"Query tensor shape: {query_tensor.shape}")
+# print(f"Database tensor shape: {database_tensor.shape}")
+# benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=10, train_params={'n_clusters': 9, 'm': 10, 'depth': 2}, query_params={'n_clusters_to_search': 3})
 
 print(f"Benchmarking on real data (large)")
 query_tensor, database_tensor = load_preembeddings('datasets/corpus_embeddings_large.pt', 'datasets/query_embeddings_large.pt')
@@ -207,7 +332,10 @@ query_tensor = query_tensor[0].flatten()
 database_tensor = database_tensor[0:10000,:]
 print(f"Query tensor shape: {query_tensor.shape}")
 print(f"Database tensor shape: {database_tensor.shape}")
-benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=100, train_params={'n_clusters': 16}, query_params={'n_clusters_to_search': 4})
+# benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=100, train_params={'n_clusters': 16, 'm': 100, 'depth': 3}, query_params={'n_clusters_to_search': 4})
+benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=100, train_params={'n_clusters': 25}, query_params={'n_clusters_to_search': 5})
+# benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=100, train_params={'n_clusters': 25, 'm': 1000, 'depth': 3}, query_params={'n_clusters_to_search': 5}) # this returns the same as a single depth model
+benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=100, train_params={'n_clusters': 25, 'm': 100, 'depth': 3}, query_params={'n_clusters_to_search': 5})
 
 
 ## Conclusions
@@ -222,10 +350,10 @@ benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalMod
 ## END Conclusions
 
 
-# Test KMeans Coverage
-model = KMeansRetrievalModel(n_clusters=10)
+# Test KMeans Coverage - this now breaks with new kmeans version
+# model = KMeansRetrievalModel(n_clusters=10)
 # database_tensor = torch.randn(100, 50)
-model.train(database_tensor)
+# model.train(database_tensor)
 # test_clusters_map_equality(model, database_tensor)
 
 # # Example Usage:
