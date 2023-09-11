@@ -54,8 +54,8 @@ def cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor) -> MPCTensor:
     which is a one-time MPC operation
     """
 
-    A_normed = A / torch.sqrt(torch.sum(A * A, dim=1, keepdim=True))
-    B_normed = B / torch.sqrt(torch.sum(B * B, dim=1, keepdim=True))
+    A_normed = A / torch.norm(A)
+    B_normed = B / torch.norm(B)
 
     # secret-share A_normed, B_normed
     A_normed_enc = crypten.cryptensor(A_normed, ptype=crypten.mpc.arithmetic)
@@ -121,20 +121,25 @@ def euclidean_mpc(A: torch.Tensor, B: torch.Tensor) -> MPCTensor:
 
 # Now we deal with top-k & max calculations
 
+def _argmax_mpc(v_enc: MPCTensor) -> MPCTensor:
+    return v_enc.argmax(one_hot=False)
+
 def argmax_mpc_tobin(v: torch.Tensor) -> bytes:
     v_enc = crypten.cryptensor(v, ptype=crypten.mpc.arithmetic)
-    res = v_enc.argmax(one_hot=False)
-    return pickle.dumps(res.get_plain_text())
+    return pickle.dumps(_argmax_mpc(v_enc).get_plain_text())
 
-def top_k_mpc_tobin(v: torch.Tensor, k: int) -> bytes:
-    v_enc = crypten.cryptensor(v, ptype=crypten.mpc.arithmetic)
+def _top_k_mpc_tobin(v_enc: MPCTensor, k: int) -> MPCTensor:
     top_k = []
     for i in range(k):
         max_one_hot = v_enc.argmax(one_hot=True)
         top_k.append(_one_hot_to_index(max_one_hot, dim=0, keepdim=False).unsqueeze(0))
         v_enc = v_enc - 100*max_one_hot # This will top the current max from being the top (could be done better)
     top_k = crypten.cat(top_k)
-    return pickle.dumps(top_k.get_plain_text())
+    return top_k
+
+def top_k_mpc_tobin(v: torch.Tensor, k: int) -> bytes:
+    v_enc = crypten.cryptensor(v, ptype=crypten.mpc.arithmetic)
+    return pickle.dumps(_top_k_mpc_tobin(v_enc, k).get_plain_text()) 
 
 def tobin_top_k_mpc_return_embedding_vectors(v: torch.Tensor, k: int, B: torch.Tensor) -> bytes:
     v_enc = crypten.cryptensor(v, ptype=crypten.mpc.arithmetic)
@@ -198,6 +203,20 @@ def handle_binary(func, mpc=False):
 
 # We now want to make a wrapper that combines the distance calculation with the top-k calculation and wraps in. It will take in a top_k function and a distance function and return a new function that does both after being wrapped in dectorate_mpc.
 
+def mpc_distance_and_argmax(distance_func, argmax_func, mpc=False):
+    def joint_func(A: torch.Tensor, B: torch.Tensor) -> MPCTensor:
+        distance_results = distance_func(A, B)
+        argmax_results = argmax_func(distance_results)
+        return argmax_results 
+    return handle_binary(joint_func, mpc=mpc)
+
+def mpc_distance_and_topk(distance_func, topk_func, mpc=False):
+    def joint_func(A: torch.Tensor, B: torch.Tensor, k: int) -> MPCTensor:
+        distance_results = distance_func(A, B)
+        topk_results = topk_func(distance_results.squeeze(), k)
+        return topk_results 
+    return handle_binary(joint_func, mpc=mpc)
+
 def mpc_distance_top_k(distance_func, top_k_func):
     """
     Creates a function that calculates distances between tensors A and B using `distance_func` and
@@ -216,5 +235,33 @@ def mpc_distance_top_k(distance_func, top_k_func):
         distance_results = distance_func(A, B)
         top_k_results = top_k_func(distance_results, k)
         return top_k_results
+
+    return mpc_distance_and_top_k
+
+# Work in progress - we need to return the distances with the top-k for batching
+
+def top_k_mpc_with_distance(v_enc: MPCTensor, k: int) -> MPCTensor:
+    top_k_max, top_k = [], []
+    for i in range(k):
+        max_result, max_one_hot = v_enc.max(dim=0,one_hot=True)
+        top_k.append(_one_hot_to_index(max_one_hot, dim=0, keepdim=False).unsqueeze(0))
+        top_k_max.append(max_result.unsqueeze(0))
+        v_enc = v_enc - 100*max_one_hot # This will top the current max from being the top (could be done better)
+    top_k = crypten.cat(top_k)
+    top_k_max = crypten.cat(top_k_max)
+    return top_k, top_k_max
+
+def mpc_distance_top_k_with_distance_func(distance_func, top_k_func=top_k_mpc_with_distance):
+    """
+    An extention of `mpc_distance_top_k()` that returns the distance values as well as the indices. It also handles the binary out of the box
+
+    A function that first computes distance and then gets the top-k results *as well as the distance values*
+    """
+
+    @dectorate_mpc
+    def mpc_distance_and_top_k(A: torch.Tensor, B: torch.Tensor, k: int) -> bytes:
+        distance_results = distance_func(A, B)
+        top_k, top_k_max  = top_k_func(distance_results, k)
+        return pickle.dumps((top_k.get_plain_text(), top_k_max.get_plain_text())) 
 
     return mpc_distance_and_top_k
