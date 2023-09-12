@@ -4,6 +4,10 @@ import torch.nn.functional as F
 from sklearn.cluster import KMeans
 import pandas as pd
 from collections import defaultdict
+import faiss
+import numpy as np
+
+np.random.seed(572342)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -134,6 +138,29 @@ class KMeansRecursiveRetrievalModel(SimpleRetrievalModel):
         for i, label in enumerate(kmeans.labels_):
             clusters_map[label].append(local_indices[i])
         return clusters, clusters_map
+    
+    def bucketize_with_kmeans_cos(self, data, local_indices):
+        # Convert data to float32 (required by faiss)
+        data = data.cpu().numpy().astype('float32')
+        
+        # Normalize vectors (for cosine similarity)
+        faiss.normalize_L2(data)
+
+        # Initialize k-means with cosine similarity
+        kmeans = faiss.Kmeans(data.shape[1], min(self.n_clusters, len(data)), niter=20, verbose=False)
+        kmeans.train(data)
+
+        # Assign points to clusters
+        _, labels = kmeans.index.search(data, 1)
+        labels = labels.ravel()
+
+        clusters = torch.tensor(kmeans.centroids)
+
+        clusters_map = {i: [] for i in range(len(clusters))}
+        for i, label in enumerate(labels):
+            clusters_map[label].append(local_indices[i])
+
+        return clusters, clusters_map
 
     def train(self, database: torch.Tensor):
         self.database = database
@@ -141,7 +168,13 @@ class KMeansRecursiveRetrievalModel(SimpleRetrievalModel):
         to_split_indices = list(range(len(database)))
         
         for d in range(self.depth):
-            clusters, clusters_map = self.bucketize_with_kmeans(new_db, to_split_indices)
+            if self.distance_func == 'cos_sim':
+                logger.debug("Bucketizing with cos")
+                clusters, clusters_map = self.bucketize_with_kmeans_cos(new_db, to_split_indices)
+            else:
+                logger.debug(f"Bucketizing with {self.distance_func}")
+                clusters, clusters_map = self.bucketize_with_kmeans(new_db, to_split_indices)
+            
             self.all_clusters.append((clusters, clusters_map))
             to_split_indices = []
 
@@ -194,17 +227,19 @@ class KMeansRecursiveRetrievalModel(SimpleRetrievalModel):
 
         logger.debug(f"Total clusters searched: {total_clusters_searched}")
         logger.debug(f"Total similarities computed: {total_sim_computed}")
+        logger.debug(f"Total size of shortlist: {len(all_candidates_indices)}")
 
         return mapped_indices, top_k_values
 
 class LSHRetrievalModel(SimpleRetrievalModel):
 
-    def __init__(self, num_tables: int = 10, hash_size: int = 32, distance_func: str = 'cos_sim', **kwargs):
+    def __init__(self, num_tables: int = 32, hash_size: int = 10, distance_func: str = 'cos_sim', num_probes: int = 2, **kwargs):
         self.num_tables = num_tables
         self.hash_size = hash_size
         self.distance_func = distance_func
         self.model_name = 'lsh_retrieval_model'
         self.hash_tables = []
+        self.num_probes = num_probes
 
     def train(self, database: torch.Tensor):
         self.database = database
@@ -221,7 +256,22 @@ class LSHRetrievalModel(SimpleRetrievalModel):
                 if h not in table:
                     table[h] = []
                 table[h].append(idx)
+
+            # Debug: Print min and max row size for each table
+            row_sizes = [len(row) for row in table.values()]
+            logger.debug(f"Table {_}: Min row size = {min(row_sizes)}, Max row size = {max(row_sizes)}")
+
             self.hash_tables.append((random_planes, table))
+
+    def _generate_neighbors(self, hash_val):
+        neighbors = []
+        for i in range(len(hash_val)):
+            if len(neighbors) >= (self.num_probes - 1):  # Limit the number of probes
+                break
+            flip = list(hash_val)
+            flip[i] = 1 - flip[i]
+            neighbors.append(tuple(flip))
+        return neighbors
 
     def _lsh_query(self, query: torch.Tensor):
         candidates = set()
@@ -229,6 +279,9 @@ class LSHRetrievalModel(SimpleRetrievalModel):
             h = tuple((torch.mm(query.unsqueeze(0), planes.t()) > 0).int().numpy()[0])
             if h in table:
                 candidates.update(table[h])
+            for neighbor in self._generate_neighbors(h): 
+                if neighbor in table:
+                    candidates.update(table[neighbor])
         return list(candidates)
 
     def query(self, query: torch.Tensor, top_k: int = 10, database=None):
@@ -236,6 +289,90 @@ class LSHRetrievalModel(SimpleRetrievalModel):
         
         # Only compute scores for LSH candidates
         candidate_indices = self._lsh_query(query)
+        logger.debug(f"Number of candidates after LSH filtering: {len(candidate_indices)}")
+        candidates = database[candidate_indices]
+        
+        if len(candidate_indices) == 0:  # No candidates found by LSH
+            return torch.tensor([]), torch.tensor([])
+        
+        scores = self._compute_scores(candidates, query)
+
+        # Negate scores for similarity measures
+        if self.distance_func in ['cos_sim', 'dot_prod']:
+            scores = -scores
+
+        # Get top_k results
+        top_k_values, top_k_relative_indices = torch.topk(scores, k=min(top_k, len(candidate_indices)), largest=True, sorted=True)
+        top_k_indices = torch.tensor([candidate_indices[idx] for idx in top_k_relative_indices])
+
+        # Return negated top_k values for similarity measures to get back the original values
+        if self.distance_func in ['cos_sim', 'dot_prod']:
+            top_k_values = -top_k_values
+        
+        return top_k_indices, top_k_values
+    
+
+class KLSHRetrievalModel(SimpleRetrievalModel):
+
+    def __init__(self, num_tables: int = 32, hash_size: int = 10, distance_func: str = 'cos_sim', num_probes: int = 2, **kwargs):
+        self.num_tables = num_tables
+        self.hash_size = hash_size
+        self.distance_func = distance_func
+        self.model_name = 'klsh_retrieval_model'
+        self.hash_tables = []
+        self.num_probes = num_probes
+
+    def train(self, database: torch.Tensor):
+        self.database = database
+        self._build_klsh_tables(database)
+
+    def _build_klsh_tables(self, data: torch.Tensor):
+        self.hash_tables = []
+        for _ in range(self.num_tables):
+            # kmeans = KMeans(n_clusters=self.hash_size, random_state=0).fit(data.numpy())
+            kmeans = KMeans(n_clusters=self.hash_size).fit(data.numpy())
+            centroids = torch.tensor(kmeans.cluster_centers_)
+            hashes = (torch.mm(data, centroids.t()) > 0).int().numpy()
+            table = {}
+            for idx, h in enumerate(hashes):
+                h = tuple(h)
+                if h not in table:
+                    table[h] = []
+                table[h].append(idx)
+
+            # Debug: Print min and max row size for each table
+            row_sizes = [len(row) for row in table.values()]
+            logger.debug(f"Table {_}: Min row size = {min(row_sizes)}, Max row size = {max(row_sizes)}")
+
+            self.hash_tables.append((centroids, table))
+
+    def _generate_neighbors(self, hash_val):
+        neighbors = []
+        for i in range(len(hash_val)):
+            if len(neighbors) >= (self.num_probes - 1):  # Limit the number of probes
+                break
+            flip = list(hash_val)
+            flip[i] = 1 - flip[i]
+            neighbors.append(tuple(flip))
+        return neighbors
+
+    def _lsh_query(self, query: torch.Tensor):
+        candidates = set()
+        for planes, table in self.hash_tables:
+            h = tuple((torch.mm(query.unsqueeze(0), planes.t()) > 0).int().numpy()[0])
+            if h in table:
+                candidates.update(table[h])
+            for neighbor in self._generate_neighbors(h): 
+                if neighbor in table:
+                    candidates.update(table[neighbor])
+        return list(candidates)
+
+    def query(self, query: torch.Tensor, top_k: int = 10, database=None):
+        database = database if database is not None else self.database
+        
+        # Only compute scores for LSH candidates
+        candidate_indices = self._lsh_query(query)
+        logger.debug(f"Number of candidates after LSH filtering: {len(candidate_indices)}")
         candidates = database[candidate_indices]
         
         if len(candidate_indices) == 0:  # No candidates found by LSH
@@ -391,19 +528,22 @@ def load_preembeddings(corpus_path: str, queries_path: str) -> None:
 print(f"Benchmarking on real data (large)")
 query_tensor, database_tensor = load_preembeddings('datasets/corpus_embeddings_large.pt', 'datasets/query_embeddings_large.pt')
 query_tensor = query_tensor[0].flatten()
-database_tensor = database_tensor[0:1000,:]
+# database_tensor = database_tensor[0:100000,:]
+database_tensor = database_tensor[50000:150000,:]
 # database_tensor = database_tensor[10000:20000,:]
 print(f"Query tensor shape: {query_tensor.shape}")
 print(f"Database tensor shape: {database_tensor.shape}")
 # benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=100, train_params={'n_clusters': 16, 'm': 100, 'depth': 3}, query_params={'n_clusters_to_search': 4})
 ## benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=100, train_params={'n_clusters': 25}, query_params={'n_clusters_to_search': 5})
 # benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=100, train_params={'n_clusters': 25, 'm': 1000, 'depth': 3}, query_params={'n_clusters_to_search': 5}) # this returns the same as a single depth model
-# benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=100, train_params={'n_clusters': 9, 'm': 100, 'depth': 11}, query_params={'n_clusters_to_search': 3})
-# benchmark(query=query_tensor, database=database_tensor, model=LSHRetrievalModel, top_k=100, train_params={}, query_params={})
-benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=25, train_params={'n_clusters': 50, 'm': 5, 'depth': 5}, query_params={'n_clusters_to_search': 3})
-# benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=10, train_params={'n_clusters': 5, 'm': 10, 'depth': 3}, query_params={'n_clusters_to_search': 5})
+# benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=100, train_params={'n_clusters': 9, 'm': 100, 'depth': 5}, query_params={'n_clusters_to_search': 3})
+benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=100, train_params={'n_clusters': 9, 'm': 10000, 'depth': 5}, query_params={'n_clusters_to_search': 2})
+# benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=100, train_params={'n_clusters': 9, 'm': 100, 'depth': 5, 'distance_func':'euclidean'}, query_params={'n_clusters_to_search': 3})
+# benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=25, train_params={'n_clusters': 50, 'm': 5, 'depth': 5}, query_params={'n_clusters_to_search': 3})
+# benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=10, train_params={'n_clusters': 5, 'm': 10, 'depth': 3, 'distance':'euclidean'}, query_params={'n_clusters_to_search': 5})
 
-
+# benchmark(query=query_tensor, database=database_tensor, model=LSHRetrievalModel, top_k=10, train_params={'num_probes': 3, 'num_tables': 32, 'hash_size': 12}, query_params={})
+# benchmark(query=query_tensor, database=database_tensor, model=KLSHRetrievalModel, top_k=10, train_params={'num_probes': 5, 'num_tables': 10, 'hash_size': 16}, query_params={})
 ## Conclusions
 # TODO: recall or precision may be calc wrong? They are always the same
 # 1. Searching a random DB for sqrt(clusters), which is basically like searching sqrt(N), means we get roughly 40%-50% recall/precision. 
