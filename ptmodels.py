@@ -6,8 +6,7 @@ import pandas as pd
 from collections import defaultdict
 import faiss
 import numpy as np
-
-np.random.seed(572342)
+import random
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -55,6 +54,44 @@ class SimpleRetrievalModel:
         
         return top_k_indices, top_k_values
 
+def fit_clusters(data: np.ndarray, n_clusters: int, distance_func: str = 'cos_sim', seed: int = 0):
+    """
+    Cluster the given database using the specified distance function.
+    
+    Args:
+    - database (np.ndarray): Data to be clustered.
+    - n_clusters (int): Number of clusters.
+    - distance_func (str): Distance function ('cos_sim' or 'euclidean').
+
+    Returns:
+    - clusters (np.ndarray): Cluster centers.
+    - labels (np.ndarray): Labels for each entry in the database.
+    """
+    if seed == 0:
+        seed = random.randint(0, 100000000)
+
+    if distance_func == 'cos_sim':
+        # Convert data to float32 (required by faiss)
+        data = data.cpu().numpy().astype('float32')
+        
+        # Normalize vectors (for cosine similarity)
+        faiss.normalize_L2(data)
+
+        # Initialize k-means with cosine similarity
+        kmeans = faiss.Kmeans(data.shape[1], min(n_clusters, len(data)), niter=20, verbose=False, seed=seed)
+        kmeans.train(data)
+
+        # Assign points to clusters
+        _, labels = kmeans.index.search(data, 1)
+        labels = labels.flatten().tolist()
+        clusters = kmeans.centroids
+    else:
+        kmeans = KMeans(n_clusters=n_clusters, random_state=seed).fit(data)  # reproducible
+        clusters = kmeans.cluster_centers_
+        labels = kmeans.labels_
+        
+    return clusters, labels
+
 class KMeansRetrievalModel(SimpleRetrievalModel):
 
     def __init__(self, n_clusters: int, distance_func: str = 'cos_sim', **kwargs):
@@ -65,14 +102,12 @@ class KMeansRetrievalModel(SimpleRetrievalModel):
         self.model_name = 'kmeans_retrieval_model'
 
     def train(self, database: torch.Tensor):
-        self.database = database
+        self.database = database        
+        clusters, labels = fit_clusters(database, self.n_clusters, self.distance_func)
         
-        kmeans = KMeans(n_clusters=self.n_clusters, random_state=42).fit(database.cpu().numpy()) # reproducibile
-        # kmeans = KMeans(n_clusters=self.n_clusters).fit(database.cpu().numpy())
-        
-        self.clusters = torch.tensor(kmeans.cluster_centers_)
+        self.clusters = torch.tensor(clusters)
         self.clusters_map = {i: [] for i in range(self.n_clusters)}
-        for i, label in enumerate(kmeans.labels_):
+        for i, label in enumerate(labels):
             self.clusters_map[label].append(i)
 
     def query(self, query: torch.Tensor, top_k: int=10, n_clusters_to_search: int=10):
@@ -228,6 +263,61 @@ class KMeansRecursiveRetrievalModel(SimpleRetrievalModel):
         logger.debug(f"Total clusters searched: {total_clusters_searched}")
         logger.debug(f"Total similarities computed: {total_sim_computed}")
         logger.debug(f"Total size of shortlist: {len(all_candidates_indices)}")
+
+        return mapped_indices, top_k_values
+
+class KMeansRetrievalModel2D(SimpleRetrievalModel):
+
+    def __init__(self, n_clusters: int, m: int, distance_func: str = 'cos_sim', seed: int = 0, **kwargs):
+        super().__init__(distance_func=distance_func, **kwargs)
+        self.n_clusters = n_clusters
+        self.m = m
+        self.clusters = None
+        self.clusters_map = {}
+        self.model_name = 'kmeans_retrieval_model2d'
+        self.remainder_indices = []
+
+    def train(self, database: torch.Tensor):
+        self.database = database
+        clusters, labels = fit_clusters(database, self.n_clusters, self.distance_func)
+        
+        self.clusters = torch.tensor(clusters)
+        self.clusters_map = {i: [] for i in range(self.n_clusters)}
+        for i, label in enumerate(labels):
+            if len(self.clusters_map[label]) < self.m:
+                self.clusters_map[label].append(i)
+            else:
+                self.remainder_indices.append(i)
+
+        logger.debug(f"Moved {len(self.remainder_indices)} items to the remainder database")
+
+    def query(self, query: torch.Tensor, top_k: int=10, n_clusters_to_search: int=10):
+        scores = self._compute_scores(self.clusters, query)
+
+        # Negate scores for similarity measures
+        if self.distance_func in ['cos_sim', 'dot_prod']:
+            scores = -scores
+
+        # Fetch the top clusters
+        _, top_clusters = torch.topk(scores, k=n_clusters_to_search)
+
+        # Retrieve database items from the top clusters
+        candidates_indices = [self.clusters_map[cluster.item()] for cluster in top_clusters]
+        candidates_indices.extend([self.remainder_indices])
+        candidates_indices = sorted([idx for sublist in candidates_indices for idx in sublist])
+        candidates = self.database[candidates_indices] 
+
+        # logger.debug("Candidates indices:", candidates_indices)
+        # logger.debug(f"Candidates database first entry: {candidates[0]}, shape: {candidates.shape}")
+        # logger.debug("Database first entry:", self.database[0])
+        logger.debug(f"Number of candidates after clustering: {len(candidates_indices)}")
+        self.last_candidates = candidates
+
+        # Query using the candidates
+        local_indices, top_k_values = super().query(query, top_k=top_k, database=candidates)
+
+        # Map local indices back to the original database
+        mapped_indices = torch.tensor([candidates_indices[idx] for idx in local_indices])
 
         return mapped_indices, top_k_values
 
@@ -423,7 +513,7 @@ def benchmark(query: torch.Tensor, database: torch.Tensor=None, model=None, top_
     # Update to report clusters
     total_count = 0
     total_items = 0
-    if model == KMeansRetrievalModel:
+    if model in [KMeansRetrievalModel, KMeansRetrievalModel2D]:
         cluster_counts = {i: 0 for i in range(model_instance.n_clusters)}
         for idx in gt_indices:
             for cluster, indices in model_instance.clusters_map.items():
@@ -434,6 +524,11 @@ def benchmark(query: torch.Tensor, database: torch.Tensor=None, model=None, top_
 
         for cluster, count in cluster_counts.items():
             logger.debug(f'cluster {cluster}={count} top_k items')
+
+        if hasattr(model_instance, 'remainder_indices') and model_instance.remainder_indices is not None:
+            curr_matches = len(gt_set.intersection(set(model_instance.remainder_indices)))
+            total_count += curr_matches
+            logger.debug(f"Remainder={len(model_instance.remainder_indices)} items and top_k={curr_matches} items")
         logger.debug(f'Total top k found in all clusters: {total_count}')
     elif model == KMeansRecursiveRetrievalModel:
         ## TODO: remove temp - sanity check
@@ -528,8 +623,9 @@ def load_preembeddings(corpus_path: str, queries_path: str) -> None:
 print(f"Benchmarking on real data (large)")
 query_tensor, database_tensor = load_preembeddings('datasets/corpus_embeddings_large.pt', 'datasets/query_embeddings_large.pt')
 query_tensor = query_tensor[0].flatten()
-# database_tensor = database_tensor[0:100000,:]
-database_tensor = database_tensor[50000:150000,:]
+# database_tensor = database_tensor[0:1000,:]
+database_tensor = database_tensor[0:100000,:]
+# database_tensor = database_tensor[50000:150000,:]
 # database_tensor = database_tensor[10000:20000,:]
 print(f"Query tensor shape: {query_tensor.shape}")
 print(f"Database tensor shape: {database_tensor.shape}")
@@ -537,13 +633,17 @@ print(f"Database tensor shape: {database_tensor.shape}")
 ## benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=100, train_params={'n_clusters': 25}, query_params={'n_clusters_to_search': 5})
 # benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=100, train_params={'n_clusters': 25, 'm': 1000, 'depth': 3}, query_params={'n_clusters_to_search': 5}) # this returns the same as a single depth model
 # benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=100, train_params={'n_clusters': 9, 'm': 100, 'depth': 5}, query_params={'n_clusters_to_search': 3})
-benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=100, train_params={'n_clusters': 9, 'm': 10000, 'depth': 5}, query_params={'n_clusters_to_search': 2})
+# benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=100, train_params={'n_clusters': 9, 'm': 10000, 'depth': 5}, query_params={'n_clusters_to_search': 2})
 # benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=100, train_params={'n_clusters': 9, 'm': 100, 'depth': 5, 'distance_func':'euclidean'}, query_params={'n_clusters_to_search': 3})
 # benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=25, train_params={'n_clusters': 50, 'm': 5, 'depth': 5}, query_params={'n_clusters_to_search': 3})
 # benchmark(query=query_tensor, database=database_tensor, model=KMeansRecursiveRetrievalModel, top_k=10, train_params={'n_clusters': 5, 'm': 10, 'depth': 3, 'distance':'euclidean'}, query_params={'n_clusters_to_search': 5})
 
 # benchmark(query=query_tensor, database=database_tensor, model=LSHRetrievalModel, top_k=10, train_params={'num_probes': 3, 'num_tables': 32, 'hash_size': 12}, query_params={})
 # benchmark(query=query_tensor, database=database_tensor, model=KLSHRetrievalModel, top_k=10, train_params={'num_probes': 5, 'num_tables': 10, 'hash_size': 16}, query_params={})
+
+# benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel2D, top_k=10, train_params={'n_clusters': 9, 'm': 100}, query_params={'n_clusters_to_search': 2})
+benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel2D, top_k=100, train_params={'n_clusters': 9, 'm': 10000}, query_params={'n_clusters_to_search': 2})
+
 ## Conclusions
 # TODO: recall or precision may be calc wrong? They are always the same
 # 1. Searching a random DB for sqrt(clusters), which is basically like searching sqrt(N), means we get roughly 40%-50% recall/precision. 
