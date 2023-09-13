@@ -634,8 +634,6 @@ def benchmark(query: torch.Tensor, database: torch.Tensor=None, model=None, top_
 class IVFRetrievalModel:
     
     def __init__(self, distance_func: str = 'cos_sim', **kwargs):
-        assert distance_func == 'cos_sim', "Only 'cos_sim' distance function is supported currently"
-        
         self.distance_func = distance_func
         self.model_name = 'ivf_retrieval_model'
         
@@ -647,14 +645,16 @@ class IVFRetrievalModel:
         
         dimension = self.database.shape[1]
         
-        # Since we are using cosine similarity, we normalize the data
-        faiss.normalize_L2(self.database)
+        if (self.distance_func in ['cos_sim', 'dot_prod']):
+            # Since we are using cosine similarity, we normalize the data
+            faiss.normalize_L2(self.database)
+            # Define the index
+            quantizer = faiss.IndexFlatIP(dimension)  # This is for clustering
+            self.index = faiss.IndexIVFFlat(quantizer, dimension, self.nlist, faiss.METRIC_INNER_PRODUCT)
+        else:
+            quantizer = faiss.IndexFlatL2(dimension)
+            self.index = faiss.IndexIVFFlat(quantizer, dimension, self.nlist, faiss.METRIC_L2)
         
-        # Define the index
-        # quantizer = faiss.IndexFlatL2(dimension)  # This is for clustering
-        quantizer = faiss.IndexFlatIP(dimension)  # This is for clustering
-        # self.index = faiss.IndexIVFFlat(quantizer, dimension, self.nlist, faiss.METRIC_L2)
-        self.index = faiss.IndexIVFFlat(quantizer, dimension, self.nlist, faiss.METRIC_INNER_PRODUCT)
         self.index.nprobe = self.nprobe
 
         # Train the index
@@ -662,21 +662,33 @@ class IVFRetrievalModel:
         self.index.add(self.database)
         
         # Storing centroids for direct querying
-        # self.centroids = faiss.vector_to_array(quantizer.xb).reshape(self.nlist, dimension)
         self.centroids = faiss.rev_swig_ptr(quantizer.get_xb(), self.nlist * dimension).reshape(self.nlist, dimension)
+    
+    def _compute_distance(self, query: torch.Tensor, database: torch.Tensor):
+        if (self.distance_func in ['cos_sim', 'dot_prod']):
+            # Compute distances to centroids
+            distances = np.dot(query, database.T)
+        else:
+            # Compute distances to centroids (L2)
+            distances = np.linalg.norm(query - database, axis=1)
+        return distances
     
     def query(self, query: torch.Tensor, top_k: int=10, database=None):
         database = self.database if database is None else database.cpu().numpy()
         query_np = query.cpu().numpy().reshape(1, -1)
-        faiss.normalize_L2(query_np)
-        faiss.normalize_L2(database)
+
+        if self.distance_func == 'cos_sim':
+            # Normalize vectors (for cosine similarity)
+            faiss.normalize_L2(query_np)
+            faiss.normalize_L2(database)
         
-        # Compute distances to centroids
-        distances_to_centroids = np.dot(query_np, self.centroids.T)
-        
+        distances_to_centroids = self._compute_distance(query_np, self.centroids)
         # Get closest centroids
-        top_centroid_indices = np.argpartition(-distances_to_centroids, self.nprobe)[:, :self.nprobe]
-        
+        if (self.distance_func in ['cos_sim', 'dot_prod']):
+            top_centroid_indices = np.argpartition(-distances_to_centroids, self.nprobe)[:, :self.nprobe]
+        else:
+            top_centroid_indices = np.argpartition(distances_to_centroids.reshape(1, -1), self.nprobe)[:, :self.nprobe]
+
         top_k_indices = []
         top_k_values = []
         invlists = self.index.invlists
@@ -694,14 +706,18 @@ class IVFRetrievalModel:
                 
                 # Calculate the distances from query to all points in this cluster
                 cluster_data = database[ids_for_cluster]
-                distances = np.dot(query_np[q_idx], cluster_data.T)
+                distances = self._compute_distance(query_np[q_idx], cluster_data)
 
                 # Store results for this cluster
                 all_indices.extend(ids_for_cluster)
                 all_distances.extend(distances)
 
             # Now, select top_k results across all clusters searched
-            selected_indices = np.argpartition(-np.array(all_distances), top_k)[:top_k] # TODO: do I need to negate here?
+            if (self.distance_func in ['cos_sim', 'dot_prod']):
+                selected_indices = np.argpartition(-np.array(all_distances), top_k)[:top_k]
+            else:
+                selected_indices = np.argpartition(np.array(all_distances), top_k)[:top_k]
+
             top_k_indices_cluster = [all_indices[i] for i in selected_indices]
             top_k_distances_cluster = [all_distances[i] for i in selected_indices]
 
@@ -713,8 +729,11 @@ class IVFRetrievalModel:
     def query_with_faiss(self, query: torch.Tensor, top_k: int=10, database=None):
         database = self.database if database is None else database.cpu().numpy()
         query_np = query.cpu().numpy().reshape(1, -1)
-        faiss.normalize_L2(query_np)
-        faiss.normalize_L2(database)
+
+        if self.distance_func == 'cos_sim':
+            # Normalize vectors (for cosine similarity)
+            faiss.normalize_L2(query_np)
+            faiss.normalize_L2(database)
 
         # Using the stock FAISS search function to retrieve the closest neighbors
         distances, indices = self.index.search(query_np, top_k)
@@ -804,7 +823,9 @@ print(f"Database tensor shape: {database_tensor.shape}")
 # benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel2D, top_k=100, train_params={'num_probes': 1, 'n_clusters': 1581, 'm': 10000}, query_params={'n_clusters_to_search': 50})
 # benchmark(query=query_tensor, database=database_tensor, model=IVFRetrievalModel, top_k=100, train_params={'nprobes': 50, 'nlist': 1581}, query_params={})
 
-model = IVFRetrievalModel(nlist=1581, nprobe=50)
+model = IVFRetrievalModel(nlist=1581, nprobe=50, distance_func='cos_sim')
+# model = IVFRetrievalModel(nlist=1581, nprobe=50, distance_func='dot_prod')
+# model = IVFRetrievalModel(nlist=1581, nprobe=50, distance_func='euclidean')
 model.train(database_tensor)
 model.sanity_check(query_tensor, top_k=100)
 
