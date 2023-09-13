@@ -19,33 +19,6 @@ crypten.init()
 #Disables OpenMP threads -- needed by @mpc.run_multiprocess which uses fork
 torch.set_num_threads(1)
 
-def preprocess_cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor) -> [torch.Tensor, torch.Tensor]:
-    """A helper function before calling cosine_similarity_mpc_pass_in_mags. Precomputes the magnitudes of A and B, and their reciprocals."""
-    A_mag_recip = torch.sqrt(torch.sum(A * A, dim=1, keepdim=True))**(-1)
-    B_mag_recip = torch.sqrt(torch.sum(B * B, dim=0, keepdim=True))**(-1)
-    return [A_mag_recip, B_mag_recip]
-
-def cosine_similarity_mpc_pass_in_mags(A: torch.Tensor, B: torch.Tensor, A_mag_recip: torch.Tensor, B_mag_recip: torch.Tensor) -> MPCTensor:
-    """
-    Computes the cosine similarity between two tensors A and B using crypten. The magnitude of A and B are pre-computed and passed in (different from cosine_similarity_mpc_naive).
-
-    A_mag_recip and B_mag_recip are the reciprocals of the magnitudes of A and B, stored in single element tensors.
-    """
-
-    # secret-share A, B
-    A_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
-    B_enc = crypten.cryptensor(B, ptype=crypten.mpc.arithmetic)
-
-    A_mag_recip_enc = crypten.cryptensor(A_mag_recip, ptype=crypten.mpc.arithmetic)
-    B_mag_recip_enc = crypten.cryptensor(B_mag_recip, ptype=crypten.mpc.arithmetic)
-
-    # Compute the dot product of A and B
-
-    dot_product = A_enc.matmul(B_enc)
-    cosine_sim = (dot_product * (A_mag_recip_enc * B_mag_recip_enc))
-
-    return cosine_sim
-
 
 def cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor) -> MPCTensor:
     """
