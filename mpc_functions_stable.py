@@ -227,7 +227,7 @@ def mpc_distance_top_k_with_distance_func(distance_func, top_k_func=top_k_mpc_wi
     @dectorate_mpc
     def mpc_distance_and_top_k(A: torch.Tensor, B: torch.Tensor, k: int) -> bytes:
         distance_results = distance_func(A, B)
-        top_k, top_k_max  = top_k_func(distance_results, k)
+        top_k, top_k_max  = top_k_func(distance_results.squeeze(0), k)
         return pickle.dumps((top_k.get_plain_text(), top_k_max.get_plain_text())) 
 
     return mpc_distance_and_top_k
