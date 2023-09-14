@@ -2,14 +2,7 @@ import crypten
 import torch
 import pickle
 import crypten.mpc as mpc
-# import crypten.common.functions.maximum
-import crypten.communicator as comm
-from crypten.config import cfg
-import pandas as pd
-from torch.nn.functional import cosine_similarity
 import time
-import numpy as np
-import math
 from crypten.common.functions.maximum import _one_hot_to_index
 from crypten.mpc.mpc import MPCTensor
 
@@ -18,33 +11,6 @@ from crypten.mpc.mpc import MPCTensor
 crypten.init()
 #Disables OpenMP threads -- needed by @mpc.run_multiprocess which uses fork
 torch.set_num_threads(1)
-
-def preprocess_cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor) -> [torch.Tensor, torch.Tensor]:
-    """A helper function before calling cosine_similarity_mpc_pass_in_mags. Precomputes the magnitudes of A and B, and their reciprocals."""
-    A_mag_recip = torch.sqrt(torch.sum(A * A, dim=1, keepdim=True))**(-1)
-    B_mag_recip = torch.sqrt(torch.sum(B * B, dim=0, keepdim=True))**(-1)
-    return [A_mag_recip, B_mag_recip]
-
-def cosine_similarity_mpc_pass_in_mags(A: torch.Tensor, B: torch.Tensor, A_mag_recip: torch.Tensor, B_mag_recip: torch.Tensor) -> MPCTensor:
-    """
-    Computes the cosine similarity between two tensors A and B using crypten. The magnitude of A and B are pre-computed and passed in (different from cosine_similarity_mpc_naive).
-
-    A_mag_recip and B_mag_recip are the reciprocals of the magnitudes of A and B, stored in single element tensors.
-    """
-
-    # secret-share A, B
-    A_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
-    B_enc = crypten.cryptensor(B, ptype=crypten.mpc.arithmetic)
-
-    A_mag_recip_enc = crypten.cryptensor(A_mag_recip, ptype=crypten.mpc.arithmetic)
-    B_mag_recip_enc = crypten.cryptensor(B_mag_recip, ptype=crypten.mpc.arithmetic)
-
-    # Compute the dot product of A and B
-
-    dot_product = A_enc.matmul(B_enc)
-    cosine_sim = (dot_product * (A_mag_recip_enc * B_mag_recip_enc))
-
-    return cosine_sim
 
 
 def cosine_similarity_mpc_opt(A: torch.Tensor, B: torch.Tensor) -> MPCTensor:
@@ -74,8 +40,8 @@ def cosine_similarity_mpc_opt2(A: torch.Tensor, B: torch.Tensor) -> MPCTensor:
     A_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
     B_enc = crypten.cryptensor(B, ptype=crypten.mpc.arithmetic)
 
-    A_mag_recip = torch.sqrt(torch.sum(A * A, dim=0, keepdim=True))**(-1)
-    B_mag_recip = torch.sqrt(torch.sum(B * B, dim=0, keepdim=True))**(-1)
+    A_mag_recip = A.norm()**(-1)
+    B_mag_recip = B.norm()**(-1)
     A_mag_recip_enc = crypten.cryptensor(A_mag_recip, ptype=crypten.mpc.arithmetic)
     B_mag_recip_enc = crypten.cryptensor(B_mag_recip, ptype=crypten.mpc.arithmetic)
 
@@ -126,7 +92,7 @@ def _argmax_mpc(v_enc: MPCTensor) -> MPCTensor:
 
 def argmax_mpc_tobin(v: torch.Tensor) -> bytes:
     v_enc = crypten.cryptensor(v, ptype=crypten.mpc.arithmetic)
-    return pickle.dumps(_argmax_mpc(v_enc).get_plain_text())
+    return _argmax_mpc(v_enc)
 
 def _top_k_mpc_tobin(v_enc: MPCTensor, k: int) -> MPCTensor:
     top_k = []
@@ -139,7 +105,7 @@ def _top_k_mpc_tobin(v_enc: MPCTensor, k: int) -> MPCTensor:
 
 def top_k_mpc_tobin(v: torch.Tensor, k: int) -> bytes:
     v_enc = crypten.cryptensor(v, ptype=crypten.mpc.arithmetic)
-    return pickle.dumps(_top_k_mpc_tobin(v_enc, k).get_plain_text()) 
+    return _top_k_mpc_tobin(v_enc, k)
 
 def tobin_top_k_mpc_return_embedding_vectors(v: torch.Tensor, k: int, B: torch.Tensor) -> bytes:
     v_enc = crypten.cryptensor(v, ptype=crypten.mpc.arithmetic)
