@@ -67,6 +67,18 @@ class MPCIVFRetrievalModel:
             distances = np.linalg.norm(query - database, axis=1)
         return distances
     
+    def encrypted_topk(self, encrypted_tensor, k):
+        # Decrypt the tensor
+        plaintext_tensor = encrypted_tensor.get_plain_text().numpy()
+        
+        # Compute the top k indices
+        topk_indices = np.argpartition(-plaintext_tensor, k)[:k]
+        
+        # Re-encrypt the indices and return
+        encrypted_topk_indices = crypten.cryptensor(topk_indices, ptype=crypten.mpc.arithmetic)
+        
+        return encrypted_topk_indices
+
     def query(self, query: torch.Tensor, top_k: int=10, database=None):
         if database is None:
             # Assume database is encrypted as well
@@ -91,53 +103,13 @@ class MPCIVFRetrievalModel:
             diff = encrypted_query - self.encrypted_centroids
             encrypted_distances_to_centroids = (diff * diff).sum(1).sqrt()
         
+        # Use our method to get encrypted top k indices
+        encrypted_top_centroid_indices = self.encrypted_topk(encrypted_distances_to_centroids, self.nprobe)
         
-
-
+        top_centroid_indices = encrypted_top_centroid_indices.get_plain_text().numpy()
         
-        # TODO: continue here..
-        # Get closest centroids
-        if (self.distance_func in ['cos_sim', 'dot_prod']):
-            top_centroid_indices = np.argpartition(-distances_to_centroids, self.nprobe)[:, :self.nprobe]
-        else:
-            top_centroid_indices = np.argpartition(distances_to_centroids.reshape(1, -1), self.nprobe)[:, :self.nprobe]
-
-        top_k_indices = []
-        top_k_values = []
-        invlists = self.index.invlists
-        for q_idx, centroid_indices in enumerate(top_centroid_indices):
-            all_indices = []
-            all_distances = []
-
-            for c_idx in centroid_indices:
-                c_idx = int(c_idx)
-                list_size = invlists.list_size(c_idx)
-                # Retrieve the IDs of the points assigned to the cluster
-                # ids_for_cluster = invlists.get_ids(c_idx)
-                ids_for_cluster = [invlists.get_single_id(c_idx, i) for i in range(list_size)]
-                logger.debug(f"Cluster {c_idx} has {list_size} items")
-                
-                # Calculate the distances from query to all points in this cluster
-                cluster_data = database[ids_for_cluster]
-                distances = self._compute_distance(query_np[q_idx], cluster_data)
-
-                # Store results for this cluster
-                all_indices.extend(ids_for_cluster)
-                all_distances.extend(distances)
-
-            # Now, select top_k results across all clusters searched
-            if (self.distance_func in ['cos_sim', 'dot_prod']):
-                selected_indices = np.argpartition(-np.array(all_distances), top_k)[:top_k]
-            else:
-                selected_indices = np.argpartition(np.array(all_distances), top_k)[:top_k]
-
-            top_k_indices_cluster = [all_indices[i] for i in selected_indices]
-            top_k_distances_cluster = [all_distances[i] for i in selected_indices]
-
-            top_k_indices.extend(top_k_indices_cluster)
-            top_k_values.extend(top_k_distances_cluster)
-
-        return top_k_indices, top_k_values
+        # TODO: continue here, for now, return the top_centroid_indices
+        return top_centroid_indices, None
     
     def query_with_faiss(self, query: torch.Tensor, top_k: int=10, database=None):
         database = self.database if database is None else database.cpu().numpy()
