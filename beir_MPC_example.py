@@ -3,8 +3,7 @@ from beir import util, LoggingHandler
 from beir.retrieval import models
 from beir.datasets.data_loader import GenericDataLoader
 from beir.retrieval.evaluation import EvaluateRetrieval
-# from beir.retrieval.search.dense import DenseRetrievalExactSearch
-from LocalDenseRetrievalExactSearch import DenseRetrievalExactSearch
+from beir.retrieval.search.dense import DenseRetrievalExactSearch
 from MPCDenseRetrievalExactSearch import MPCDenseRetrievalExactSearch
 
 import logging
@@ -36,8 +35,9 @@ def benchmark_retriever(retriever, corpus, queries, qrels):
 
 def setup(reduce_corpus_size: bool = True, sample_size: int = 500, proportion: float = 0.1):
     """This is a good one-time function to run to start embedding the corpus and queries and then save them to file for later use."""
+    from LocalDenseRetrievalExactSearch import DenseRetrievalExactSearch
     # Setup
-    dataset = "trec-covid"
+    dataset = "fiqa"
     url = "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{}.zip".format(dataset)
     out_dir = os.path.join(pathlib.Path(__file__).parent.absolute(), "datasets")
     data_path = util.download_and_unzip(url, out_dir)
@@ -66,52 +66,87 @@ def setup(reduce_corpus_size: bool = True, sample_size: int = 500, proportion: f
         corpus, qrels, queries = reduce_corpus_size(corpus, qrels, queries, sample_size, proportion)
     print("Corpus size: {} on {} queries".format(len(corpus), len(queries)))
     # It's good to save these for reproducibility
-    pickle.dump([corpus, qrels, queries], open("datasets/corpus_large.pkl", "wb"))
+    pickle.dump([corpus, qrels, queries], open("datasets/corpus_fiqa.pkl", "wb"))
 
     #### Dense Retrieval using SBERT (Sentence-BERT) ####
     print("Beginning embedding")
-    embedding_model = models.SentenceBERT("msmarco-distilbert-base-tas-b", device="cuda")
-    from sentence_transformers import SentenceTransformer
-    embedding_model.q_model = SentenceTransformer("msmarco-distilbert-base-tas-b", device="cuda") # This is just to force the pytorch device for speed reasons
+    embedding_model = models.SentenceBERT("msmarco-distilbert-base-v3", device="cuda")
+    # from sentence_transformers import SentenceTransformer
+    # embedding_model.q_model = SentenceTransformer("msmarco-distilbert-base-v3", device="cuda") # This is just to force the pytorch device for speed reasons
 
-    model = DenseRetrievalExactSearch(embedding_model, batch_size=256, corpus_chunk_size=512*9999)
+    model = DenseRetrievalExactSearch(embedding_model, batch_size=256, corpus_chunk_size=512*2**6, k_values=[1,3,5,50])
 
-    model.preemebed_corpus(corpus, save_path="datasets/corpus_embeddings_large.pt")
-    model.preembed_queries(queries, save_path="datasets/query_embeddings_large.pt")
+    model.preembed_queries(queries, save_path="datasets/query_embeddings_fiqa.pt")
+    model.preemebed_corpus(corpus, save_path="datasets/corpus_embeddings_fiqa.pt")
+
+    model.load_preembeddings("datasets/corpus_embeddings_fiqa.pt", "datasets/query_embeddings_fiqa.pt")
+
 
     print("Finished embedding, testing out retrieval")
     # Now we benchmark normal dense retrieval
-    retriever = EvaluateRetrieval(model, score_function="cos_sim")
-    benchmark_retriever(retriever, corpus, queries, qrels)
+    retriever = EvaluateRetrieval(model, score_function="dot_score")
+    results = retriever.retrieve(corpus, queries)
+
+    # timetaken, recall, precision, ndcg, mrr, recall_cap, hole, results = benchmark_retriever(retriever, corpus, queries, qrels)
+
+    top_k = 10
+    query_id = 1824
+
+    # query_id, ranking_scores = random.choice(list(results.items()))
+    ranking_scores = results[str(query_id)]
+    scores_sorted = sorted(ranking_scores.items(), key=lambda item: item[1], reverse=True)
+    print("Query : %s\n" % queries[str(query_id)])
+
+    for rank in range(top_k):
+        doc_id = scores_sorted[rank][0]
+        # Format: Rank x: ID [Title] Body
+        print("Rank %d: %s [%s] - %s\n" % (rank+1, doc_id, corpus[doc_id].get("title"), corpus[doc_id].get("text")))
 
 # setup(reduce_corpus_size=False, sample_size=500, proportion=0.1)
 
-corpus, qrels, queries = pickle.load(open("datasets/corpus_large.pkl", "rb"))
+corpus, qrels, queries = pickle.load(open("datasets/corpus_fiqa.pkl", "rb"))
 
 # Now we benchmark MPC dense retrieval
+print("Building BEIR model and loading pre-embeddings.")
 model = MPCDenseRetrievalExactSearch(None, corpus_chunk_size=512*6)
 
 # Load in premade embeddings
-model.load_preembeddings("datasets/corpus_embeddings_large.pt", "datasets/query_embeddings_large.pt")
+model.load_preembeddings("datasets/corpus_embeddings_fiqa.pt", "datasets/query_embeddings_fiqa.pt")
+print("Loaded embeddings")
 
-# Test the basic
-retriever = EvaluateRetrieval(model, score_function="cos_sim",  k_values=[1,3,5])
+# model._search(corpus, queries, top_k=5, score_function="dot_score");
+# model._search_mulit_threaded(corpus, queries, top_k=5, score_function="cos_sim");
+
+
+# print("Running basic retrieval")
+retriever = EvaluateRetrieval(model, score_function="dot_score",  k_values=[1,3,5,10])
 timetaken, recall, *the_rest =benchmark_retriever(retriever, corpus, queries, qrels)
+pickle.dump([timetaken, recall, *the_rest], open("beir_results_dot_score.pkl", "wb"))
+print(timetaken, recall)
+
+# print("Running MPC distance with basic top-k")
+# retriever = EvaluateRetrieval(model, score_function="mpc_dot_vanilla_topk",  k_values=[1,3,5, 10])
+# timetaken, recall, *the_rest =benchmark_retriever(retriever, corpus, queries, qrels)
+# pickle.dump([timetaken, recall, *the_rest], open("beir_results_dot_score.pkl", "wb"))
 
 
-# test the advanced
-retriever = EvaluateRetrieval(model, score_function="mpc_dot_vanilla_topk",  k_values=[1,3,5])
-timetaken, recall, *the_rest =benchmark_retriever(retriever, corpus, queries, qrels)
-
-
-# test the advanced
+print("Running MPC distance with MPC top-k")
 retriever = EvaluateRetrieval(model, score_function="mpc_dot_topk",  k_values=[1,3,5])
 timetaken, recall, *the_rest =benchmark_retriever(retriever, corpus, queries, qrels)
+print(timetaken, recall)
+pickle.dump([timetaken, recall, *the_rest], open("beir_results_mpc_dot_topk.pkl", "wb"))
 
-results = {}
-for score_function in ["cos_sim", "dot_score", "mpc_dot_vanilla_topk", "mpc_cos_vanilla_topk", "mpc_cos2_vanilla_topk", "mpc_eucld_vanilla_topk", "mpc_dot_topk", "mpc_cos_topk", "mpc_cos2_topk", "mpc_eucld_topk"]:
-    retriever = EvaluateRetrieval(model, score_function="cos_sim",  k_values=[1,3,5,10])
-    timetaken, recall, *the_rest = benchmark_retriever(retriever, corpus, queries, qrels)
-    results[score_function] = [timetaken, recall]
+# print("Now we loop through and benchmark everything, saving the results to beir_results.pkl")
+# results = {}
+# for score_function in ["cos_sim", "dot_score", "mpc_dot_vanilla_topk", "mpc_cos_vanilla_topk", "mpc_cos2_vanilla_topk", "mpc_eucld_vanilla_topk", "mpc_dot_topk", "mpc_cos_topk", "mpc_cos2_topk", "mpc_eucld_topk"]:
+#     retriever = EvaluateRetrieval(model, score_function="cos_sim",  k_values=[1,3,5,10])
+#     timetaken, recall, *the_rest = benchmark_retriever(retriever, corpus, queries, qrels)
+#     results[score_function] = [timetaken, recall]
     
-    pickle.dump(results, open("results.pkl", "wb"))
+#     pickle.dump(results, open("beir_results.pkl", "wb"))
+
+
+
+
+from beir.retrieval.search.dense import DenseRetrievalExactSearch
+
