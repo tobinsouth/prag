@@ -73,7 +73,8 @@ def fit_clusters(data: np.ndarray, n_clusters: int, distance_func: str = 'cos_si
     # Convert data to float32 (required by faiss)
     data = data.cpu().numpy().astype('float32')
 
-    kmeans = faiss.Kmeans(data.shape[1], min(n_clusters, len(data)), niter=20, verbose=False, seed=seed)
+    # kmeans = faiss.Kmeans(data.shape[1], min(n_clusters, len(data)), niter=20, verbose=False, seed=seed)
+    kmeans = faiss.Kmeans(data.shape[1], min(n_clusters, len(data)), niter=20, verbose=False)
 
     if distance_func == 'cos_sim':
         # Normalize vectors (for cosine similarity)
@@ -127,7 +128,7 @@ class KMeansRetrievalModel(SimpleRetrievalModel):
         print("Candidates indices:", candidates_indices)
         print(f"Candidates database first entry: {candidates[0]}, shape: {candidates.shape}")
         print("Database first entry:", self.database[0])
-        self.last_candidates = candidates
+        self._last_candidates = candidates
 
         # Query using the candidates
         local_indices, top_k_values = super().query(query, top_k=top_k, database=candidates)
@@ -320,7 +321,9 @@ class KMeansRetrievalModel2D(SimpleRetrievalModel):
         # logger.debug(f"Candidates database first entry: {candidates[0]}, shape: {candidates.shape}")
         # logger.debug("Database first entry:", self.database[0])
         logger.debug(f"Number of candidates after clustering: {len(candidates_indices)} (or {len(candidates_indices) - len(self.remainder_indices)} if remainder is excluded)")
-        self.last_candidates = candidates
+
+        if (self.debug):
+            self._last_candidates = candidates
 
         # Query using the candidates
         local_indices, top_k_values = super().query(query, top_k=top_k, database=candidates)
@@ -639,7 +642,8 @@ class IVFRetrievalModel:
         
         self.nlist = kwargs.get('nlist', 100)  # Number of clusters
         self.nprobe = kwargs.get('nprobe', 10)  # Number of clusters to search
-        
+        self.debug = kwargs.get('debug', True)
+
     def train(self, database: torch.Tensor):
         self.database = database.cpu().numpy()
         
@@ -685,9 +689,13 @@ class IVFRetrievalModel:
         distances_to_centroids = self._compute_distance(query_np, self.centroids)
         # Get closest centroids
         if (self.distance_func in ['cos_sim', 'dot_prod']):
+            print(f"pt distances are {-distances_to_centroids}")
             top_centroid_indices = np.argpartition(-distances_to_centroids, self.nprobe)[:, :self.nprobe]
         else:
             top_centroid_indices = np.argpartition(distances_to_centroids.reshape(1, -1), self.nprobe)[:, :self.nprobe]
+
+        # this helps with debugging MPC vs plaintext
+        self._top_centroid_indices = top_centroid_indices
 
         top_k_indices = []
         top_k_values = []
@@ -711,6 +719,9 @@ class IVFRetrievalModel:
                 # Store results for this cluster
                 all_indices.extend(ids_for_cluster)
                 all_distances.extend(distances)
+            
+            if (self.debug):
+                self._last_candidates = all_indices
 
             # Now, select top_k results across all clusters searched
             if (self.distance_func in ['cos_sim', 'dot_prod']):
@@ -790,60 +801,62 @@ def load_preembeddings(corpus_path: str, queries_path: str) -> None:
     query_embeddings = torch.load(queries_path, map_location=torch.device('cpu')).to('cpu')
     return query_embeddings, corpus_embeddings
 
-# # Example Usage
-# query_tensor = torch.randn(50)
-# # torch.manual_seed(42)  # Ensures reproducibility
-# database_tensor = torch.randn(1000, 50)
-# print(f"Benchmarking on random data")
-# benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=50, train_params={'n_clusters': 100, 'm': 10, 'depth': 2}, query_params={'n_clusters_to_search': 10})
 
-# # Read data and check
-# print(f"Benchmarking on real data (small)")
-# query_tensor = pd.read_csv('datasets/query_vector.csv').values
-# database_tensor = pd.read_csv('datasets/D.csv').values
+if __name__ == "__main__":
+    # # Example Usage
+    # query_tensor = torch.randn(50)
+    # # torch.manual_seed(42)  # Ensures reproducibility
+    # database_tensor = torch.randn(1000, 50)
+    # print(f"Benchmarking on random data")
+    # benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=50, train_params={'n_clusters': 100, 'm': 10, 'depth': 2}, query_params={'n_clusters_to_search': 10})
 
-# # Convert the data to PyTorch tensors
-# query_tensor = torch.tensor(query_tensor, dtype=torch.float32).flatten()
-# database_tensor = torch.tensor(database_tensor, dtype=torch.float32).t()
-# print(f"Query tensor shape: {query_tensor.shape}")
-# print(f"Database tensor shape: {database_tensor.shape}")
-# benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=10, train_params={'n_clusters': 9, 'm': 10, 'depth': 2}, query_params={'n_clusters_to_search': 3})
+    # # Read data and check
+    # print(f"Benchmarking on real data (small)")
+    # query_tensor = pd.read_csv('datasets/query_vector.csv').values
+    # database_tensor = pd.read_csv('datasets/D.csv').values
 
-print(f"Benchmarking on real data (large)")
-query_tensor, database_tensor = load_preembeddings('datasets/corpus_embeddings_large.pt', 'datasets/query_embeddings_large.pt')
-query_tensor = query_tensor[0].flatten()
-# database_tensor = database_tensor[0:1000,:]
-database_tensor = database_tensor[0:100000,:]
-# database_tensor = database_tensor[50000:150000,:]
-# database_tensor = database_tensor[10000:20000,:]
-print(f"Query tensor shape: {query_tensor.shape}")
-print(f"Database tensor shape: {database_tensor.shape}")
+    # # Convert the data to PyTorch tensors
+    # query_tensor = torch.tensor(query_tensor, dtype=torch.float32).flatten()
+    # database_tensor = torch.tensor(database_tensor, dtype=torch.float32).t()
+    # print(f"Query tensor shape: {query_tensor.shape}")
+    # print(f"Database tensor shape: {database_tensor.shape}")
+    # benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=10, train_params={'n_clusters': 9, 'm': 10, 'depth': 2}, query_params={'n_clusters_to_search': 3})
 
-# benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=100, train_params={'n_clusters': 16, 'm': 100, 'depth': 3}, query_params={'n_clusters_to_search': 4})
-# benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel2D, top_k=100, train_params={'num_probes': 1, 'n_clusters': 1581, 'm': 10000}, query_params={'n_clusters_to_search': 50})
-# benchmark(query=query_tensor, database=database_tensor, model=IVFRetrievalModel, top_k=100, train_params={'nprobes': 50, 'nlist': 1581}, query_params={})
+    print(f"Benchmarking on real data (large)")
+    query_tensor, database_tensor = load_preembeddings('datasets/corpus_embeddings_large.pt', 'datasets/query_embeddings_large.pt')
+    query_tensor = query_tensor[0].flatten()
+    # database_tensor = database_tensor[0:1000,:]
+    database_tensor = database_tensor[0:100000,:]
+    # database_tensor = database_tensor[50000:150000,:]
+    # database_tensor = database_tensor[10000:20000,:]
+    print(f"Query tensor shape: {query_tensor.shape}")
+    print(f"Database tensor shape: {database_tensor.shape}")
 
-model = IVFRetrievalModel(nlist=1581, nprobe=50, distance_func='cos_sim')
-# model = IVFRetrievalModel(nlist=1581, nprobe=50, distance_func='dot_prod')
-# model = IVFRetrievalModel(nlist=1581, nprobe=50, distance_func='euclidean')
-model.train(database_tensor)
-model.sanity_check(query_tensor, top_k=100)
+    # benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=100, train_params={'n_clusters': 16, 'm': 100, 'depth': 3}, query_params={'n_clusters_to_search': 4})
+    # benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel2D, top_k=100, train_params={'num_probes': 1, 'n_clusters': 1581, 'm': 10000}, query_params={'n_clusters_to_search': 50})
+    # benchmark(query=query_tensor, database=database_tensor, model=IVFRetrievalModel, top_k=100, train_params={'nprobes': 50, 'nlist': 1581}, query_params={})
 
-
-# # Example Usage:
-# model = IVFRetrievalModel(nlist=1581, nprobe=50)
-# model.train(database_tensor)
-# top_k_indices, top_k_values = model.query(query_tensor, top_k=100)
+    model = IVFRetrievalModel(nlist=1581, nprobe=50, distance_func='cos_sim')
+    # model = IVFRetrievalModel(nlist=1581, nprobe=50, distance_func='dot_prod')
+    # model = IVFRetrievalModel(nlist=1581, nprobe=50, distance_func='euclidean')
+    model.train(database_tensor)
+    model.sanity_check(query_tensor, top_k=100)
 
 
+    # # Example Usage:
+    # model = IVFRetrievalModel(nlist=1581, nprobe=50)
+    # model.train(database_tensor)
+    # top_k_indices, top_k_values = model.query(query_tensor, top_k=100)
 
-## Conclusions
-# TODO: recall or precision may be calc wrong? They are always the same
-# 1. Searching a random DB for sqrt(clusters), which is basically like searching sqrt(N), means we get roughly 40%-50% recall/precision. 
-# 2. Searching a real DB means less clusters are populated (because of the sparsity of the data), which means we generally want to use less clusters in k_means, so the chances we hit 
-# populated cluster is high. For example over a db of size (5000 samples, 784 dim), we get much better results if we use n_clusters: 16 and n_clusters_to_search: 4, compared to say n_clusters: 100 and n_clusters_to_search: 10.
-# Both have a similar query time (actually, the less the better), but the former has much better recall/precision. Ironically, training is faster that way too, so we 'win'
-# Next thing to realize is that we still want avoid searching empty clusters, so we should use more k-means initiations to avoid that. We may also want to multi-probe.
-# benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=100, train_params={'n_clusters': 16}, query_params={'n_clusters_to_search': 4})
-# BTW: setting n_clusters_to_search:3 and n_clusters to 9 boosts us generally to 97%! (4,2) to 99% - but clearly this will not be the same for every database
-## END Conclusions
+
+
+    ## Conclusions
+    # TODO: recall or precision may be calc wrong? They are always the same
+    # 1. Searching a random DB for sqrt(clusters), which is basically like searching sqrt(N), means we get roughly 40%-50% recall/precision. 
+    # 2. Searching a real DB means less clusters are populated (because of the sparsity of the data), which means we generally want to use less clusters in k_means, so the chances we hit 
+    # populated cluster is high. For example over a db of size (5000 samples, 784 dim), we get much better results if we use n_clusters: 16 and n_clusters_to_search: 4, compared to say n_clusters: 100 and n_clusters_to_search: 10.
+    # Both have a similar query time (actually, the less the better), but the former has much better recall/precision. Ironically, training is faster that way too, so we 'win'
+    # Next thing to realize is that we still want avoid searching empty clusters, so we should use more k-means initiations to avoid that. We may also want to multi-probe.
+    # benchmark(query=query_tensor, database=database_tensor, model=KMeansRetrievalModel, top_k=100, train_params={'n_clusters': 16}, query_params={'n_clusters_to_search': 4})
+    # BTW: setting n_clusters_to_search:3 and n_clusters to 9 boosts us generally to 97%! (4,2) to 99% - but clearly this will not be the same for every database
+    ## END Conclusions

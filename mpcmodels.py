@@ -24,6 +24,7 @@ class MPCIVFRetrievalModel:
         
         self.nlist = kwargs.get('nlist', 100)  # Number of clusters
         self.nprobe = kwargs.get('nprobe', 10)  # Number of clusters to search
+        self.debug = kwargs.get('debug', True)
 
     '''
     This function needs to run after training is done.
@@ -53,8 +54,20 @@ class MPCIVFRetrievalModel:
             # Padding the list to ensure all tensors have the same shape
             ids_for_cluster.extend([-1] * (max_size - list_size))
             # cluster_data.extend([-1] * (max_size - list_size))
-            # cluster_data = np.pad(cluster_data, ((0, (max_size - list_size)), (0, 0)), mode='constant', constant_values=0) # TODO: make sure adding zeroes doesn't mess it up.. prob depends which dist metric we use
-            cluster_data = np.pad(cluster_data, ((0, (max_size - list_size)), (0, 0)), mode='constant', constant_values=23423) # TODO: make sure adding zeroes doesn't mess it up.. prob depends which dist metric we use
+            cluster_data = np.pad(cluster_data, ((0, (max_size - list_size)), (0, 0)), mode='constant', constant_values=0) # TODO: make sure adding zeroes doesn't mess it up.. prob depends which dist metric we use
+         
+            # cluster_data = np.pad(cluster_data, ((0, (max_size - list_size)), (0, 0)), mode='constant', constant_values=-23423) # TODO: make sure adding zeroes doesn't mess it up.. prob depends which dist metric we use
+            # Compute how many rows you need to pad
+            
+            
+            # padding_rows = max_size - cluster_data.shape[0]
+
+            # # If padding_rows is less than or equal to 0, no padding is needed
+            # if padding_rows > 0:
+            #     # Create the pad array
+            #     pad_array = np.repeat(cluster_data[0, :][np.newaxis, :], padding_rows, axis=0)
+            #     # Vertical stack the cluster_data and pad_array
+            #     cluster_data = np.vstack((cluster_data, pad_array))            
          
             clusters_id_list.append(torch.Tensor(ids_for_cluster))
             clusters_distance_list.append(torch.Tensor(cluster_data).flatten())
@@ -71,13 +84,14 @@ class MPCIVFRetrievalModel:
     # We assume a trusted owner performs this
     # In practice, we should have fed learning k-means or MPC-k-means for this    
     def train(self, database: torch.Tensor):
-        self.database = database.cpu().numpy()
+        self.database = database
+        db_cpu = database.cpu().numpy() # NOTE: .cpu() messes crypten's encryption
         
         dimension = self.database.shape[1]
         
         if (self.distance_func in ['cos_sim', 'dot_prod']):
             # Since we are using cosine similarity, we normalize the data
-            faiss.normalize_L2(self.database)
+            self.database = F.normalize(self.database, p=2, dim=1)
             # Define the index
             quantizer = faiss.IndexFlatIP(dimension)  # This is for clustering
             self.index = faiss.IndexIVFFlat(quantizer, dimension, self.nlist, faiss.METRIC_INNER_PRODUCT)
@@ -88,8 +102,8 @@ class MPCIVFRetrievalModel:
         self.index.nprobe = self.nprobe
 
         # Train the index
-        self.index.train(self.database)
-        self.index.add(self.database)
+        self.index.train(db_cpu)
+        self.index.add(db_cpu)
         
         # Storing centroids for direct querying
         self.centroids = torch.Tensor(faiss.rev_swig_ptr(quantizer.get_xb(), self.nlist * dimension).reshape(self.nlist, dimension))
@@ -108,7 +122,10 @@ class MPCIVFRetrievalModel:
         plaintext_tensor = encrypted_tensor.get_plain_text()
 
         # Compute the top k indices
-        _, topk_indices = (-plaintext_tensor).topk(k)
+        print(f"Distances are = {plaintext_tensor}")
+        
+        # _, topk_indices = plaintext_tensor.topk(k) # TODO: this returns the biggest ones. Figure out if this what I want - sanity says no, logic says yes
+        topk_indices = plaintext_tensor.sort().indices[0][:k] # TODO: this returns the smallest
         topk_indices = topk_indices.flatten()
 
         # If one_hot is not zero, transform each index into a one-hot vector
@@ -139,31 +156,45 @@ class MPCIVFRetrievalModel:
         else:
             if self.distance_func == 'cos_sim':
                 # Normalize vectors (for cosine similarity)
-                faiss.normalize_L2(database)
-            encrypted_database = crypten.cryptensor(database.cpu(), ptype=crypten.mpc.arithmetic)
+                # faiss.normalize_L2(database) # TODO: don't normalize for now
+                self.database = F.normalize(database, p=2, dim=1)
+            encrypted_database = crypten.cryptensor(database, ptype=crypten.mpc.arithmetic)
+        
+        ## TODO: remove debug
+        print(f"db reconsutrcted = {encrypted_database.get_plain_text()}")
 
-        query = query.reshape(1, -1).cpu().numpy()
+        # TODO: debug, disable for now..
+        query = query.reshape(1, -1)
+        # query = query.reshape(1, -1).cpu().numpy()
         if self.distance_func == 'cos_sim':
             # Normalize vectors (for cosine similarity)
-            faiss.normalize_L2(query)
+            # faiss.normalize_L2(query) # TODO: debug, disable for now..
+            query = F.normalize(query, p=2, dim=1)
         
         encrypted_query = crypten.cryptensor(query, ptype=crypten.mpc.arithmetic)
         
         # Compute encrypted distances to centroids
         if self.distance_func in ['cos_sim', 'dot_prod']:
             encrypted_distances_to_centroids = encrypted_query.matmul(self.encrypted_centroids.t())
+
+            ## TODO: remove DEBUG
+            ptdist = self.encrypted_centroids.get_plain_text()
+            print(f"distances in the clear are = {torch.mm(query.reshape(1, -1),torch.Tensor(ptdist).t())}")
+            print(f"distances after encryption = {encrypted_distances_to_centroids.get_plain_text()}")
+            print(f"query={query}, ptcentroids={ptdist}")
+            print(f"reconstructed query={encrypted_query.get_plain_text()}, ptdist={ptdist}")
+            print("okay")
+            
         else:
             # L2 distance can be trickier with encrypted data
             diff = encrypted_query - self.encrypted_centroids
             encrypted_distances_to_centroids = (diff * diff).sum(1).sqrt()
         
-<<<<<<< HEAD
         encrypted_top_centroid_indices = self.encrypted_topk(-encrypted_distances_to_centroids, self.nprobe, one_hot=self.nlist)
 
-        ## TODO: remove temp
-        top_centroid_indices = encrypted_top_centroid_indices.get_plain_text().numpy()
-        self._top_centroid_indices = top_centroid_indices
-        ##
+        if (self.debug):
+            top_centroid_indices = encrypted_top_centroid_indices.get_plain_text().numpy()
+            self._top_centroid_indices = top_centroid_indices
 
         # Obliviously reduce the dataset size to (n_probes, cluster_size).
         # This has O(N) comm between the servers (can be improved ..), but after which the search space is greatly reduced
@@ -172,6 +203,31 @@ class MPCIVFRetrievalModel:
         # TODO: do this over unencrypted if you want honest-maj
         enc_distance_candidates_matrix = encrypted_top_centroid_indices.matmul(self.encrypted_clusters_distances).reshape(self.nprobe*self.max_cluster_size, self.database.shape[1])
         indices_candidates_matrix = encrypted_top_centroid_indices.matmul(self.encrypted_clusters_ids).flatten().get_plain_text() # TODO: this is temp, can do this more efficiently. For now
+
+        if (self.debug):
+            self._last_candidates = indices_candidates_matrix
+            t1 = encrypted_top_centroid_indices.get_plain_text()
+            t2 = self.encrypted_clusters_ids.get_plain_text()
+            t3 = torch.mm(t1, t2)
+            print(f"result shape - {t3.shape}")
+
+
+            indices = self.encrypted_topk(-encrypted_distances_to_centroids, self.nprobe).get_plain_text()
+            idx_list_count = 0
+            for idx in indices:
+                ii = int(idx)
+                idx_list = [self.index.invlists.get_single_id(ii, j) for j in range(self.index.invlists.list_size( ii ))]
+                idx_list_count += len(idx_list)
+                for jj in range(t3.shape[0]):
+                    if t3[jj][0] == idx_list[0]:
+                        t3jj = t3[jj][t3[jj] != -1].int()
+                        print("-=-=-")
+                        print(f"Cluster {idx}={torch.all(t3jj == torch.Tensor(idx_list))}")
+                        # print(f"Cluster {idx}={t3[jj].int()}, and originally={idx_list}")
+            print(f"idx_list_count={idx_list_count}")
+
+            # print(f"Cluster 26={t2[26].int()}, and originally={}")
+            print("Ok done")
         
         # Compute encrypted distances to candidates
         if self.distance_func in ['cos_sim', 'dot_prod']:
@@ -190,15 +246,6 @@ class MPCIVFRetrievalModel:
 
         # TODO: do I need the distances even?
         return top_k_indices, None
-=======
-        # Use our method to get encrypted top k indices
-        encrypted_top_centroid_indices = self.encrypted_topk(encrypted_distances_to_centroids, self.nprobe)
-        
-        top_centroid_indices = encrypted_top_centroid_indices.get_plain_text().numpy()
-        
-        # TODO: continue here, for now, return the top_centroid_indices
-        return top_centroid_indices, None
->>>>>>> e605db02ebef1790a2e44fb9f96515d210fe655d
     
     def query_with_faiss(self, query: torch.Tensor, top_k: int=10, database=None):
         database = self.database if database is None else database.cpu().numpy()
@@ -244,12 +291,30 @@ class MPCIVFRetrievalModel:
 def mpc_query_vs_plaintext(query_tensor: torch.Tensor, model: MPCIVFRetrievalModel, modelpt: IVFRetrievalModel) -> bytes:
     model.encrypt()
     top_k_indices, top_k_values = model.query(query_tensor, top_k=10)
-    top_k_indices, top_k_values = modelpt.query(query_tensor, top_k=10)
+    top_k_indicespt, top_k_values = modelpt.query(query_tensor, top_k=10)
 
     # Check centroids are the same
     centroids1 = model._top_centroid_indices
+    cent1 = []
+    for row in range(centroids1.shape[0]):
+        cent1.append(centroids1[row].argmax())
+    centroids1 = np.array([cent1])
     centroids2 = modelpt._top_centroid_indices
-    print(f"Centroids are equal? --> {np.array_equal(centroids1.sort(), centroids2.sort())}")
+    # print(f"Centroids are equal? --> {np.array_equal(centroids1.sort(), centroids2.sort())}")
+    print(f"centroids1 are:{np.sort(centroids1)}")
+    print(f"centroids2 are:{np.sort(centroids2)}")
+
+    last_candidates1 = model._last_candidates
+    last_candidates2 = modelpt._last_candidates
+
+    print(f"last_candidates1={last_candidates1[last_candidates1 != -1].sort()}, last_candidates2={sorted(last_candidates2)}")
+    print(f"last_candidates1.shape={last_candidates1[last_candidates1 != -1].shape}, last_candidates2={len(last_candidates2)}")
+    
+
+    print(f"top k from encrypted model: {np.sort(top_k_indices)}")
+    print(f"top k from plaintext model: {np.sort(top_k_indicespt)}")
+    print("Done")
+    
 
 
 @mpc.run_multiprocess(world_size=2)
@@ -295,5 +360,14 @@ def test_pt_vs_mpc():
     # Move to MPC-land
     mpc_query_vs_plaintext(query_tensor, model, modelpt)
     
+from crypten.config import cfg
+def set_precision(bits):
+    cfg.encoder.precision_bits = bits
+
 if __name__ == "__main__":
+    #initialize crypten
+    crypten.init()
+    #Disables OpenMP threads -- needed by @mpc.run_multiprocess which uses fork
+    torch.set_num_threads(1)
+    # set_precision(30)
     test_pt_vs_mpc()
