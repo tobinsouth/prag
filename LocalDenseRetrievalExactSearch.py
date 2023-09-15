@@ -4,6 +4,9 @@ import logging
 import torch
 from typing import Dict
 import heapq
+from tqdm import tqdm
+import multiprocessing
+
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +59,6 @@ class DenseRetrievalExactSearch(BaseSearch):
         if save_path:
             torch.save(corpus_embeddings, save_path)
 
-
     def preembed_queries(self, queries: Dict[str, str], save_path: str = None) -> None:
         queries = [queries[qid] for qid in queries]
         query_embeddings = self.model.encode_queries(
@@ -77,15 +79,29 @@ class DenseRetrievalExactSearch(BaseSearch):
                return_sorted: bool = False, 
                **kwargs) -> Dict[str, Dict[str, float]]:
         """
+        This is a wrapper for either a single threaded search or a multi-threaded search. See the `_search` and `_search_multi_threaded` functions for more details.
+        """
+
+        return self._search(corpus, queries, top_k, score_function, return_sorted, **kwargs)
+    
+    def _search(self, 
+               corpus: Dict[str, Dict[str, str]], 
+               queries: Dict[str, str], 
+               top_k: int, 
+               score_function: str,
+               return_sorted: bool = False, 
+               **kwargs) -> Dict[str, Dict[str, float]]:
+        """
         This function is a reworked version of the original `search` function from `beir.retrieval.search.dense.DenseRetrievalExactSearch`. The original function would do the embedding of the corpus on every call of the `search` function. This function instead uses the pre-embedded corpus and queries to calculate the similarity measures.
 
         Further, this function now does each query in sequence rather than as a bunch to make it easier to compare the MPC functions (top-k) with others.
         """
 
-        print("Running")
         if score_function not in self.score_functions:
             raise ValueError("score function: {} must be either (cos_sim) for cosine similarity or (dot) for dot product".format(score_function))
             
+        print("Running Dense Retrieval on queries using {}...".format(score_function))
+
         if self.query_embeddings is not None:
             query_embeddings = self.query_embeddings
         else:
@@ -99,15 +115,13 @@ class DenseRetrievalExactSearch(BaseSearch):
         query_ids = list(queries.keys())
         self.results = {qid: {} for qid in query_ids}
 
-        print("Sorting Corpus by document length (Longest first)...")
         corpus_ids = sorted(corpus, key=lambda k: len(corpus[k].get("title", "") + corpus[k].get("text", "")), reverse=True)
         corpus = [corpus[cid] for cid in corpus_ids]
 
         itr = range(0, len(corpus), self.corpus_chunk_size)
 
         result_heaps = {qid: [] for qid in query_ids}  # Keep only the top-k docs for each query
-        for batch_num, corpus_start_idx in enumerate(itr):
-            print("Encoding Batch {}/{}...".format(batch_num+1, len(itr)))
+        for batch_num, corpus_start_idx in enumerate(tqdm(itr)):
             corpus_end_idx = min(corpus_start_idx + self.corpus_chunk_size, len(corpus))
 
             # Get chunk of corpus embeddings
@@ -115,7 +129,7 @@ class DenseRetrievalExactSearch(BaseSearch):
 
             for query_itr, query_embedding in enumerate(query_embeddings):
 
-                top_k_values, top_k_idx  = self.score_functions[score_function](query_embedding, sub_corpus_embeddings, top_k+1)
+                top_k_values, top_k_idx  = self.score_functions[score_function](query_embedding.t(), sub_corpus_embeddings, top_k+1)
 
                 query_id = query_ids[query_itr]                  
                 for sub_corpus_id, score in zip(top_k_idx, top_k_values):
@@ -133,6 +147,90 @@ class DenseRetrievalExactSearch(BaseSearch):
                 self.results[qid][corpus_id] = score
         
         return self.results 
+    
+
+    def process_corpus_chunk(self, args):
+        corpus_chunk, corpus_start_idx, query_embeddings, score_function, corpus_ids, top_k, query_ids = args
+        print("Processing corpus chunk", corpus_start_idx)
+        result_heaps = {qid: [] for qid in query_ids}  # Keep only the top-k docs for each query
+        for query_itr, query_embedding in enumerate(query_embeddings):
+            top_k_values, top_k_idx  = self.score_functions[score_function](query_embedding, corpus_chunk, top_k+1)
+            query_id = query_ids[query_itr]
+            for sub_corpus_id, score in zip(top_k_idx, top_k_values):
+                corpus_id = corpus_ids[corpus_start_idx+sub_corpus_id]
+                if corpus_id != query_id:
+                    if len(result_heaps[query_id]) < top_k:
+                        heapq.heappush(result_heaps[query_id], (score, corpus_id))
+                    else:
+                        heapq.heappushpop(result_heaps[query_id], (score, corpus_id))
+
+        print("Finished processing corpus chunk", corpus_start_idx)
+        return result_heaps
+
+    def _search_mulit_threaded(self, 
+               corpus: Dict[str, Dict[str, str]], 
+               queries: Dict[str, str], 
+               top_k: int, 
+               score_function: str,
+               return_sorted: bool = False, 
+               **kwargs) -> Dict[str, Dict[str, float]]:
+        """
+        This function is a reworked version of the original `search` function from `beir.retrieval.search.dense.DenseRetrievalExactSearch`. The original function would do the embedding of the corpus on every call of the `search` function. This function instead uses the pre-embedded corpus and queries to calculate the similarity measures.
+
+        Further, this function now does each query in sequence rather than as a bunch to make it easier to compare the MPC functions (top-k) with others.
+        """
+
+        if score_function not in self.score_functions:
+            raise ValueError("score function: {} must be either (cos_sim) for cosine similarity or (dot) for dot product".format(score_function))
+            
+        print("Running Dense Retrieval on queries using {}...".format(score_function))
+
+        if self.query_embeddings is not None:
+            query_embeddings = self.query_embeddings
+        else:
+             raise RuntimeError('You have not pre-embedded the queries. Please run preembed_queries() or load_preembeddings()  first or use the original BEIR code.')
+         
+        if self.corpus_embeddings is not None:
+            corpus_embeddings = self.corpus_embeddings
+        else:
+            raise RuntimeError('You have not pre-embedded the corpus. Please run preembed_corpus() or load_preembeddings() first or use the original BEIR code.')
+
+        query_ids = list(queries.keys())
+        self.results = {qid: {} for qid in query_ids}
+
+        corpus_ids = sorted(corpus, key=lambda k: len(corpus[k].get("title", "") + corpus[k].get("text", "")), reverse=True)
+        corpus = [corpus[cid] for cid in corpus_ids]
+
+        itr = range(0, len(corpus), self.corpus_chunk_size)
+        num_processes = multiprocessing.cpu_count()
+
+
+        # Distribute tasks to processes
+        args_list = [
+            (corpus_embeddings[corpus_start_idx: min(corpus_start_idx + self.corpus_chunk_size, len(corpus))], 
+            corpus_start_idx, query_embeddings, score_function, corpus_ids, top_k, query_ids)
+            for corpus_start_idx in itr
+        ]
+
+        with multiprocessing.Pool(num_processes) as pool:
+            results = pool.map(self.process_corpus_chunk, args_list)
+
+        # results = [self.process_corpus_chunk(args) for args in args_list]
+
+        # Merge results
+        result_heaps = {qid: [] for qid in query_ids}
+        for partial_result in results:
+            for qid in query_ids:
+                result_heaps[qid].extend(partial_result[qid])
+                result_heaps[qid] = heapq.nlargest(top_k, result_heaps[qid])  # Retain only top-k results for each query
+     
+
+        for qid in result_heaps:
+            for score, corpus_id in result_heaps[qid]:
+                self.results[qid][corpus_id] = score
+        
+        return self.results 
+    
     
     def topk_vanilla(self, distance_vector, k):
         # Get top-k values
