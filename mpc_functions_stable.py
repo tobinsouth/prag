@@ -86,6 +86,91 @@ def euclidean_mpc(A: torch.Tensor, B: torch.Tensor) -> MPCTensor:
 
 
 # Now we deal with top-k & max calculations
+# def _mpc_argsort_helper(d_enc: MPCTensor, idx_enc: MPCTensor) -> MPCTensor:
+#     """
+#     Sorts an encrypted tensor and returns the sorted indices.
+    
+#     Parameters:
+#     - d_enc: encrypted tensor array to be sorted
+#     - idx_enc: encrypted tensor array of indices
+    
+#     Returns:
+#     - Tuple of two elements:
+#         1. Encrypted tensor of indices that sorts the input tensor.
+#     """
+    
+#     # Size of the tensor.
+#     size = d_enc.size(0)
+    
+#     # Perform bubble sort based on the indices only.
+#     for i in range(size):
+#         for j in range(0, size-i-1):
+            
+#             # Compare elements using indices.
+#             swapped = d_enc[idx_enc[j]] > d_enc[idx_enc[j+1]]
+            
+#             # Swap indices based on comparison.
+#             idx_enc[j], idx_enc[j+1] = (
+#                 swapped * idx_enc[j+1] + (1 - swapped) * idx_enc[j],
+#                 swapped * idx_enc[j] + (1 - swapped) * idx_enc[j+1]
+#             )
+    
+#     return idx_enc
+
+# def mpc_argsort(d: torch.Tensor, k: int) -> bytes:
+#     size = d.size(0)
+#     d_enc = crypten.cryptensor(d, ptype=crypten.mpc.arithmetic)
+#     indices = crypten.cryptensor(torch.arange(size), ptype=crypten.mpc.arithmetic)
+
+#     # Sort the encrypted tensor.
+#     indices = _mpc_argsort_helper(d_enc, indices)
+    
+#     top_k_idx = indices[:k].get_plain_text()
+#     top_k_max = [d_enc[idx] for idx in top_k_idx]
+
+#     return pickle.dumps((top_k_idx, top_k_max))
+
+
+# def _mpc_arg_k_max_helper(d_enc: MPCTensor, top_k_idx: MPCTensor, k: int) -> MPCTensor:
+#     """
+#     Sorts an encrypted tensor and returns the sorted indices.
+    
+#     Parameters:
+#     - d_enc: encrypted tensor array to be sorted
+#     - top_k_idx: encrypted tensor array of indices of length k
+    
+#     Returns:
+#     - Tuple of two elements:
+#         1. Encrypted tensor of indices that sorts the input tensor.
+#     """
+    
+#     # Size of the tensor.
+#     size = d_enc.size(0)
+    
+#     for i in range(size):
+#         for j in range(0, k):
+#             j_of_k_index = top_k_idx[j]
+#             if d_enc[i] > d_enc[j_of_k_index]:
+#                 # Shift all the elements down
+#                 for l in range(k-1, j, -1):
+#                     top_k_idx[l] = top_k_idx[l-1]
+#                 top_k_idx[j] = i
+#                 break
+
+#     return top_k_idx
+    
+# def mpc_arg_k_max(d: torch.Tensor, k: int) -> bytes:
+#     size = d.size(0)
+#     d_enc = crypten.cryptensor(d)
+#     top_k_idx = crypten.cryptensor(torch.arange(k))
+    
+#     # Sort the encrypted tensor.
+#     top_k_idx = _mpc_arg_k_max_helper(d_enc, top_k_idx, k)
+    
+#     top_k_idx = top_k_idx.get_plain_text()
+#     top_k_max = [d[idx] for idx in top_k_idx]
+
+#     return pickle.dumps((top_k_idx, top_k_max))
 
 def _argmax_mpc(v_enc: MPCTensor) -> MPCTensor:
     return v_enc.argmax(one_hot=False)
@@ -244,7 +329,7 @@ def mpc_distance_top_k_with_distance_func(distance_func, top_k_func=top_k_mpc_wi
     @dectorate_mpc
     def mpc_distance_and_top_k(A: torch.Tensor, B: torch.Tensor, k: int) -> bytes:
         distance_results = distance_func(A, B)
-        top_k, top_k_max  = top_k_func(distance_results, k)
+        top_k, top_k_max  = top_k_func(distance_results.squeeze(0), k)
         return pickle.dumps((top_k.get_plain_text(), top_k_max.get_plain_text())) 
 
     return mpc_distance_and_top_k

@@ -16,7 +16,7 @@ logging.basicConfig(format='%(asctime)s - %(message)s',
                     handlers=[LoggingHandler()])
 #### /print debug information to stdout
 
-dataset = "trec-covid"
+dataset = "fiqa"
 
 #### Download nfcorpus.zip dataset and unzip the dataset
 url = "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{}.zip".format(dataset)
@@ -36,7 +36,7 @@ corpus, queries, qrels = GenericDataLoader(data_folder=data_path).load(split="te
 #### The model was fine-tuned using cosine-similarity.
 #### Complete list - https://www.sbert.net/docs/pretrained_models.html
 
-model = DenseRetrievalExactSearch(models.SentenceBERT("msmarco-distilbert-base-tas-b"), batch_size=256, corpus_chunk_size=512*9999)
+model = DenseRetrievalExactSearch(models.SentenceBERT("msmarco-distilbert-base-v3"), batch_size=256, corpus_chunk_size=512*9999)
 retriever = EvaluateRetrieval(model, score_function="dot")
 
 #### Retrieve dense results (format of results is identical to qrels)
@@ -60,7 +60,7 @@ query_id, ranking_scores = random.choice(list(results.items()))
 scores_sorted = sorted(ranking_scores.items(), key=lambda item: item[1], reverse=True)
 logging.info("Query : %s\n" % queries[query_id])
 
-for rank in range(top_k):
+for rank in range(top_k): 
     doc_id = scores_sorted[rank][0]
     # Format: Rank x: ID [Title] Body
     logging.info("Rank %d: %s [%s] - %s\n" % (rank+1, doc_id, corpus[doc_id].get("title"), corpus[doc_id].get("text")))
