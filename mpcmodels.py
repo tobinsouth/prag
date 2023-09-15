@@ -103,7 +103,6 @@ class MPCIVFRetrievalModel:
             distances = np.linalg.norm(query - database, axis=1)
         return distances
     
-<<<<<<< HEAD
     def encrypted_topk(self, encrypted_tensor, k, one_hot=0, second_dim=0):
         # Decrypt the tensor
         plaintext_tensor = encrypted_tensor.get_plain_text()
@@ -132,19 +131,6 @@ class MPCIVFRetrievalModel:
         enc_topk = crypten.cryptensor(topk_tensor, ptype=crypten.mpc.arithmetic)
 
         return enc_topk
-=======
-    def encrypted_topk(self, encrypted_tensor, k):
-        # Decrypt the tensor
-        plaintext_tensor = encrypted_tensor.get_plain_text().numpy()
-        
-        # Compute the top k indices
-        topk_indices = np.argpartition(-plaintext_tensor, k)[:k]
-        
-        # Re-encrypt the indices and return
-        encrypted_topk_indices = crypten.cryptensor(topk_indices, ptype=crypten.mpc.arithmetic)
-        
-        return encrypted_topk_indices
->>>>>>> e605db02ebef1790a2e44fb9f96515d210fe655d
 
     def query(self, query: torch.Tensor, top_k: int=10, database=None):
         if database is None:
