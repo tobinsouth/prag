@@ -13,7 +13,7 @@ import crypten.mpc as mpc
 import crypten.communicator as comm
 from ptmodels import IVFRetrievalModel, load_preembeddings
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("prag.mpcmodels")
 # logging.basicConfig(level=logging.DEBUG)
 logging.basicConfig(level=logging.INFO)
 
@@ -26,6 +26,7 @@ class MPCIVFRetrievalModel:
         self.nlist = kwargs.get('nlist', 100)  # Number of clusters
         self.nprobe = kwargs.get('nprobe', 10)  # Number of clusters to search
         self.debug = kwargs.get('debug', True)
+        self.is_honest_majority = kwargs.get('is_honest_majority', True)
 
     '''
     This function needs to run after training is done.
@@ -68,8 +69,13 @@ class MPCIVFRetrievalModel:
         # Stacking the list of tensors to form a matrix
         clusters_ids = torch.stack(clusters_id_list)
         clusters_distances = torch.stack(clusters_distance_list)
-        encrypted_clusters_ids = crypten.cryptensor(clusters_ids, ptype=crypten.mpc.arithmetic)
-        encrypted_clusters_distances = crypten.cryptensor(clusters_distances, ptype=crypten.mpc.arithmetic)
+
+        if not self.is_honest_majority:
+            encrypted_clusters_ids = crypten.cryptensor(clusters_ids, ptype=crypten.mpc.arithmetic)
+            encrypted_clusters_distances = crypten.cryptensor(clusters_distances, ptype=crypten.mpc.arithmetic)
+        else:
+            encrypted_clusters_ids = clusters_ids
+            encrypted_clusters_distances = clusters_distances
 
         return encrypted_clusters_ids, encrypted_clusters_distances
     
@@ -141,17 +147,9 @@ class MPCIVFRetrievalModel:
 
         return enc_topk
 
-    def query(self, query: torch.Tensor, top_k: int=10, database=None):
-        if database is None:
-            # Assume database is encrypted as well
-            encrypted_database = self.encrypted_database
-        else:
-            if self.distance_func == 'cos_sim':
-                # Normalize vectors (for cosine similarity)
-                self.database = F.normalize(database, p=2, dim=1)
-            encrypted_database = crypten.cryptensor(database, ptype=crypten.mpc.arithmetic)
-        
+    def query(self, query: torch.Tensor, top_k: int=10):
         query = query.reshape(1, -1)
+        
         if self.distance_func == 'cos_sim':
             # Normalize vectors (for cosine similarity)
             query = F.normalize(query, p=2, dim=1)
@@ -183,14 +181,22 @@ class MPCIVFRetrievalModel:
         # This has O(N) comm between the servers (can be improved ..), but after which the search space is greatly reduced
         # and we can run comparisons
 
-        # TODO: do this over unencrypted if you want honest-maj
+        ## These are the only two operations that take O(N) communication. By using honest majority and partial-muls/sum-of-products
+        ## We are able to turn these into local operations. Since Crypten doesn't support Shamir SS, we simulate this by keeping
+        ## the encrypted_clusters_distances and encrypted_clusters_ids as scalars
+        ## Another point of optimization (which we don't implement), that is relevant to the DISHONEST majority setting
+        ## is doing these two matrix multiplications in parallel
         enc_distance_candidates_matrix = encrypted_top_centroid_indices.matmul(self.encrypted_clusters_distances).reshape(self.nprobe*self.max_cluster_size, self.database.shape[1])
-        indices_candidates_matrix = encrypted_top_centroid_indices.matmul(self.encrypted_clusters_ids).flatten().get_plain_text() # TODO: this is temp, can do this more efficiently. For now
+        enc_indices_candidates_matrix = encrypted_top_centroid_indices.matmul(self.encrypted_clusters_ids).flatten()
 
         if (self.debug):
-            self._last_candidates = indices_candidates_matrix
+            self._last_candidates = enc_indices_candidates_matrix.get_plain_text()
             t1 = encrypted_top_centroid_indices.get_plain_text()
-            t2 = self.encrypted_clusters_ids.get_plain_text()
+            if hasattr(self.encrypted_clusters_ids, 'get_plain_text'):
+                t2 = self.encrypted_clusters_ids.get_plain_text()
+            else:
+                t2 = self.encrypted_clusters_ids
+                
             t3 = torch.mm(t1, t2)
             logger.debug(f"result shape - {t3.shape}")
 
@@ -221,6 +227,7 @@ class MPCIVFRetrievalModel:
         top_k_indices_local = enc_top_k_indices.get_plain_text()
 
         # TODO: map back to global indices obliviously
+        indices_candidates_matrix = enc_indices_candidates_matrix.get_plain_text()
         top_k_indices = indices_candidates_matrix[top_k_indices_local.int()]
 
         # TODO: do I need the distances even?
@@ -293,7 +300,6 @@ def mpc_query_vs_plaintext(query_tensor: torch.Tensor, model: MPCIVFRetrievalMod
     print(f"top k from plaintext model: {np.sort(top_k_indicespt)}")
     print("Done")
     
-
 
 @mpc.run_multiprocess(world_size=2)
 def mpc_approx_query(query_tensor: torch.Tensor, model: MPCIVFRetrievalModel) -> bytes:
