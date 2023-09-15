@@ -103,6 +103,7 @@ class MPCIVFRetrievalModel:
             distances = np.linalg.norm(query - database, axis=1)
         return distances
     
+<<<<<<< HEAD
     def encrypted_topk(self, encrypted_tensor, k, one_hot=0, second_dim=0):
         # Decrypt the tensor
         plaintext_tensor = encrypted_tensor.get_plain_text()
@@ -131,6 +132,19 @@ class MPCIVFRetrievalModel:
         enc_topk = crypten.cryptensor(topk_tensor, ptype=crypten.mpc.arithmetic)
 
         return enc_topk
+=======
+    def encrypted_topk(self, encrypted_tensor, k):
+        # Decrypt the tensor
+        plaintext_tensor = encrypted_tensor.get_plain_text().numpy()
+        
+        # Compute the top k indices
+        topk_indices = np.argpartition(-plaintext_tensor, k)[:k]
+        
+        # Re-encrypt the indices and return
+        encrypted_topk_indices = crypten.cryptensor(topk_indices, ptype=crypten.mpc.arithmetic)
+        
+        return encrypted_topk_indices
+>>>>>>> e605db02ebef1790a2e44fb9f96515d210fe655d
 
     def query(self, query: torch.Tensor, top_k: int=10, database=None):
         if database is None:
@@ -157,6 +171,7 @@ class MPCIVFRetrievalModel:
             diff = encrypted_query - self.encrypted_centroids
             encrypted_distances_to_centroids = (diff * diff).sum(1).sqrt()
         
+<<<<<<< HEAD
         encrypted_top_centroid_indices = self.encrypted_topk(-encrypted_distances_to_centroids, self.nprobe, one_hot=self.nlist)
 
         ## TODO: remove temp
@@ -189,6 +204,15 @@ class MPCIVFRetrievalModel:
 
         # TODO: do I need the distances even?
         return top_k_indices, None
+=======
+        # Use our method to get encrypted top k indices
+        encrypted_top_centroid_indices = self.encrypted_topk(encrypted_distances_to_centroids, self.nprobe)
+        
+        top_centroid_indices = encrypted_top_centroid_indices.get_plain_text().numpy()
+        
+        # TODO: continue here, for now, return the top_centroid_indices
+        return top_centroid_indices, None
+>>>>>>> e605db02ebef1790a2e44fb9f96515d210fe655d
     
     def query_with_faiss(self, query: torch.Tensor, top_k: int=10, database=None):
         database = self.database if database is None else database.cpu().numpy()
