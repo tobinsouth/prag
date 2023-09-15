@@ -5,7 +5,7 @@ from tqdm import tqdm
 from mpc_functions_stable import *
 
 query_vector = torch.rand(1,768) * 2 - 1
-database_vectors = torch.rand(768, 1000) * 2 - 1
+database_vectors = torch.rand(768, 6000) * 2 - 1
 
 def relative_error(y_pred, y_true):
     return torch.mean(torch.abs(y_pred - y_true) / torch.abs(y_true))
@@ -28,6 +28,25 @@ def top_k_f1(real_top_k, mpc_top_k):
 
 ## Distance function checks
 
+# import crypten.communicator as comm
+
+# comm.is_initialized()
+# comm._init(use_threads=True, init_ttp=crypten.mpc.ttp_required())
+# crypten._setup_prng()
+# comm.__use_threads = True
+
+# torch.set_num_threads(1)
+
+# comm.get()
+
+# # comm.uninit()
+
+# import crypten
+# crypten.uninit()
+# import os
+# os.environ["OMP_NUM_THREADS"] = "40"
+# crypten.init()
+
 # Test the most basic, dot similarity
 real_dot = query_vector @ database_vectors
 dot_score_res = handle_binary(dot_score_mpc)(query_vector, database_vectors)
@@ -35,6 +54,8 @@ dot_score_res = handle_binary(dot_score_mpc)(query_vector, database_vectors)
 dot_score_res_mpc, timetaken = timethis(handle_binary(dot_score_mpc, mpc=True), query_vector, database_vectors)
 
 print(f"dot_score — error {relative_error(real_dot, dot_score_res):.2e} — mpc matches: {torch.allclose(dot_score_res, dot_score_res_mpc, atol=0.001)} — time: {timetaken:.4f}" )
+
+dot_score_res_binary_mpc, timetaken = timethis(dectorate_mpc(dot_score_mpc), query_vector, database_vectors)
 
 
 # Cosine similarity checks
