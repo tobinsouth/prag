@@ -219,7 +219,7 @@ def IVF_experiments():
 
     IVF_experiments_df_list = []
     for embedding_dim in [768]: # [256, 768, 1024, 2048, 4096, 8192]:
-        for db_size in [5000, 10000, 100000]:
+        for db_size in [5000, 10000, 50000, 100000]:
             for distribution in ['normal', 'uniform']: # , 'binary', 'normal_large'
                 if distribution == 'normal':
                     query_vector =torch.tensor(np.random.normal(0,0.05, size=(1, embedding_dim)), dtype=torch.float32)
@@ -235,12 +235,12 @@ def IVF_experiments():
                     database_vectors = torch.tensor(np.random.normal(0,1, size=(embedding_dim, db_size)), dtype=torch.float32)
 
                 for distance_func in ['cos_sim', 'dot_prod', 'euclidean']:
-                    for c in [5,10,15]:
+                    for c in [3,5,10,15]:
                         for nprobe in [30,50,100]:
                             model = IVFRetrievalModel(nlist=int(c*np.sqrt(db_size)), nprobe=nprobe, distance_func=distance_func)
                             _, modeltrain_time = timethis(model.train, database_vectors)
 
-                            for k in [1,3,5,10,20,50,75] + list(range(50, 500, 50)) + list(range(500, min(db_size, 2000), 100)):     
+                            for k in [1,3,5,10,20,50,75, 100]: # + list(range(50, 500, 50)) + list(range(500, min(db_size, 2000), 100)):     
                                 # model.query(query_vector, k)
                                 (top_k_indices, top_k_values), timetaken = timethis(model.query, query_vector, k)
                                 top_k_indices, top_k_values = torch.tensor(top_k_indices), torch.tensor(top_k_values)
