@@ -103,6 +103,23 @@ def _top_k_mpc_tobin(v_enc: MPCTensor, k: int) -> MPCTensor:
     top_k = crypten.cat(top_k)
     return top_k
 
+# Pad v_enc so we get a one-hot-vector of a certain size
+def _top_k_mpc_tobin_one_hot_padding(v_enc: MPCTensor, k: int, d: int) -> MPCTensor:
+    top_k = []
+    if (len(v_enc.shape) > 1):
+        v_enc = v_enc.flatten()
+    zeros = torch.zeros(d-v_enc.shape[0])
+    enc_zeros = crypten.cryptensor(zeros, ptype=crypten.mpc.arithmetic)
+    v_enc_pad = crypten.cat([v_enc, enc_zeros])
+
+    for i in range(k):
+        max_one_hot = v_enc_pad.argmax(one_hot=True)
+        top_k.append(max_one_hot)
+        v_enc_pad = v_enc_pad - 100*max_one_hot # This will top the current max from being the top (could be done better)
+        
+    top_k = crypten.stack(top_k)
+    return top_k
+
 def top_k_mpc_tobin(v: torch.Tensor, k: int) -> bytes:
     v_enc = crypten.cryptensor(v, ptype=crypten.mpc.arithmetic)
     return _top_k_mpc_tobin(v_enc, k)

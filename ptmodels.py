@@ -8,7 +8,8 @@ import faiss
 import numpy as np
 import random
 
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
+logger = logging.getLogger("prag.ptmodels")
 logging.basicConfig(level=logging.DEBUG)
 
 class SimpleRetrievalModel:

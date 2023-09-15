@@ -12,10 +12,12 @@ import pickle
 import crypten.mpc as mpc
 import crypten.communicator as comm
 from ptmodels import IVFRetrievalModel, load_preembeddings
+import time
+from mpc_functions_stable import top_k_mpc_tobin, mpc_distance_and_topk, cosine_similarity_mpc_opt, _top_k_mpc_tobin, _top_k_mpc_tobin_one_hot_padding
 
 logger = logging.getLogger("prag.mpcmodels")
-# logging.basicConfig(level=logging.DEBUG)
-logging.basicConfig(level=logging.INFO)
+# logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 class MPCIVFRetrievalModel:
     
@@ -115,35 +117,42 @@ class MPCIVFRetrievalModel:
         return distances
     
     # TODO: build a better approx. algorithm
-    def encrypted_topk(self, encrypted_tensor, k, one_hot=0, second_dim=0):
-        # Decrypt the tensor
-        plaintext_tensor = encrypted_tensor.get_plain_text()
+    def encrypted_topk(self, encrypted_tensor, k, one_hot=0, second_dim=0, plaintext=True):
+        if not plaintext:
+            if (one_hot != 0):
+                enc_topk = _top_k_mpc_tobin_one_hot_padding(encrypted_tensor, k, one_hot)
+            else:
+                enc_topk = _top_k_mpc_tobin(encrypted_tensor, k)
 
-        # Compute the top k indices
-        logger.debug(f"Distances are = {plaintext_tensor}")
-        
-        # _, topk_indices = plaintext_tensor.topk(k) # TODO: this returns the biggest ones. Figure out if this what I want - sanity says no, logic says yes
-        topk_indices = plaintext_tensor.sort().indices[0][:k] # TODO: this returns the smallest
-        topk_indices = topk_indices.flatten()
-
-        # If one_hot is not zero, transform each index into a one-hot vector
-        if one_hot != 0:
-            one_hot_tensors = []
-            for idx in topk_indices:
-                if second_dim != 0:
-                    one_hot_vector = torch.zeros(one_hot, second_dim)
-                else:
-                    one_hot_vector = torch.zeros(one_hot)
-                one_hot_vector[idx] = 1
-                one_hot_tensors.append(one_hot_vector.flatten())
-            
-            # Stack the one-hot vectors
-            topk_tensor = torch.stack(one_hot_tensors, dim=0)
         else:
-            topk_tensor = torch.tensor(topk_indices)
+            # Decrypt the tensor
+            plaintext_tensor = encrypted_tensor.get_plain_text()
 
-        # Re-encrypt the indices/vector and return
-        enc_topk = crypten.cryptensor(topk_tensor, ptype=crypten.mpc.arithmetic)
+            # Compute the top k indices
+            logger.debug(f"Distances are = {plaintext_tensor}")
+            
+            # _, topk_indices = plaintext_tensor.topk(k) # TODO: this returns the biggest ones. Figure out if this what I want - sanity says no, logic says yes
+            topk_indices = plaintext_tensor.sort().indices[0][:k] # TODO: this returns the smallest
+            topk_indices = topk_indices.flatten()
+
+            # If one_hot is not zero, transform each index into a one-hot vector
+            if one_hot != 0:
+                one_hot_tensors = []
+                for idx in topk_indices:
+                    if second_dim != 0:
+                        one_hot_vector = torch.zeros(one_hot, second_dim)
+                    else:
+                        one_hot_vector = torch.zeros(one_hot)
+                    one_hot_vector[idx] = 1
+                    one_hot_tensors.append(one_hot_vector.flatten())
+                
+                # Stack the one-hot vectors
+                topk_tensor = torch.stack(one_hot_tensors, dim=0)
+            else:
+                topk_tensor = torch.tensor(topk_indices)
+
+            # Re-encrypt the indices/vector and return
+            enc_topk = crypten.cryptensor(topk_tensor, ptype=crypten.mpc.arithmetic)
 
         return enc_topk
 
@@ -197,7 +206,7 @@ class MPCIVFRetrievalModel:
             else:
                 t2 = self.encrypted_clusters_ids
                 
-            t3 = torch.mm(t1, t2)
+            t3 = torch.mm(t1.float(), t2)
             logger.debug(f"result shape - {t3.shape}")
 
             indices = self.encrypted_topk(-encrypted_distances_to_centroids, self.nprobe).get_plain_text()
@@ -302,30 +311,34 @@ def mpc_query_vs_plaintext(query_tensor: torch.Tensor, model: MPCIVFRetrievalMod
     
 
 @mpc.run_multiprocess(world_size=2)
-def mpc_approx_query(query_tensor: torch.Tensor, model: MPCIVFRetrievalModel) -> bytes:
+def mpc_benchmark_knn(query_tensor: torch.Tensor, database: torch.Tensor, model: MPCIVFRetrievalModel, k: int=10) -> None:
     model.encrypt()
-    top_k_indices, top_k_values = model.query(query_tensor, top_k=10)
 
-    # # secret-share A, B
-    # A_enc = crypten.cryptensor(A, ptype=crypten.mpc.arithmetic)
-    # B_enc = crypten.cryptensor(B, ptype=crypten.mpc.arithmetic)
-    # logger.debug(f"A={A_enc.shape}")
-    # logger.debug(f"B={B_enc.shape}")
-    # # Compute the dot product of A and B
-    # dot_product = A_enc.matmul(B_enc)
+    start_time = time.time()
+    top_k_indices, top_k_values = model.query(query_tensor, top_k=k)
+    end_time = time.time()
+    approx_knn_time = end_time - start_time
 
-    # # Compute the magnitudes of A and B
-    # mag_A_enc = (A_enc * A_enc).sum(dim=1, keepdim=True).sqrt()
-    # mag_B_enc = (B_enc * B_enc).sum(dim=0, keepdim=True).sqrt()
-    # logger.debug(f"dot={dot_product.shape}")
-    # logger.debug(f"A_magrec={mag_A_enc.shape}")
-    # logger.debug(f"B_magrec={mag_B_enc.shape}")
+    start_time = time.time()
+    distances = cosine_similarity_mpc_opt(query_tensor, database.t())
+    top_k_exact = _top_k_mpc_tobin(distances, k)
+    end_time = time.time()
+    exact_knn_time = end_time - start_time
 
-    # # Compute the cosine similarity
-    # cosine_sim = (dot_product / (mag_A_enc * mag_B_enc)).get_plain_text()
-    
-    # cosine_sim_binary = pickle.dumps(cosine_sim)
-    # return cosine_sim_binary
+    # exact_knn_time = 0
+    crypten.print(f"Parameters: data size = {database.shape}, k={k}")
+    crypten.print(f"exact_knn_time = {exact_knn_time}, approx_knn_time = {approx_knn_time}")
+
+def benchmark_knn(k: int=10, N: int=0, nprobe: int=10, nlist: int=50):
+    query_tensor, database_tensor = load_preembeddings('datasets/corpus_embeddings_large.pt', 'datasets/query_embeddings_large.pt')
+    query_tensor = query_tensor[0].flatten()
+    if N > 0:
+        database_tensor = database_tensor[0:N,:]
+    model = MPCIVFRetrievalModel(nlist=nlist, nprobe=nprobe)
+    model.train(database_tensor)
+
+    # Move to MPC-land
+    mpc_benchmark_knn(query_tensor, database_tensor, model, k)
 
 def test_pt_vs_mpc():
     query_tensor, database_tensor = load_preembeddings('datasets/corpus_embeddings_large.pt', 'datasets/query_embeddings_large.pt')
@@ -354,4 +367,13 @@ if __name__ == "__main__":
     #Disables OpenMP threads -- needed by @mpc.run_multiprocess which uses fork
     torch.set_num_threads(1)
     # set_precision(30)
-    test_pt_vs_mpc()
+    
+    ## Helps to test correctness
+    # test_pt_vs_mpc()
+
+    ## Benchmark
+    benchmark_knn(N=1000, nlist=50)
+    # benchmark_knn(N=10000, nlist=250)
+
+
+
