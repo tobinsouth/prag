@@ -5,6 +5,12 @@ import crypten.mpc as mpc
 # import crypten.common.functions.maximum
 import crypten.communicator as comm
 from crypten.config import cfg
+#initialize crypten
+crypten.init()
+#Disables OpenMP threads -- needed by @mpc.run_multiprocess which uses fork
+torch.set_num_threads(1)
+def set_precision(bits):
+    cfg.encoder.precision_bits = bits
 import pandas as pd
 from torch.nn.functional import cosine_similarity
 import time
@@ -23,8 +29,8 @@ logger.setLevel(logging.DEBUG)
 # BENCHMARK_DIM1 = (1, 1000) # query tokens, embedding dimensionality
 # BENCHMARK_DIM2 = (1000, 5000) # embedding dimensionality, number of samples
 
-BENCHMARK_DIM1 = (1000, 1) # query tokens, embedding dimensionality
-BENCHMARK_DIM2 = (1000, 1) # embedding dimensionality, number of samples
+BENCHMARK_DIM1 = (1, 768) # query tokens, embedding dimensionality
+BENCHMARK_DIM2 = (768, 1000) # embedding dimensionality, number of samples
 
 #initialize crypten
 crypten.init()
@@ -372,10 +378,10 @@ def benchmark_crypten_max(num_trials=2, size=2**10):
         # 'accelerated_cascade': np.zeros(num_trials),
         # 'local_log_reduction': np.zeros(num_trials),
         # 'recursive_pairwise': np.zeros(num_trials),
-        # 'pairwise': np.zeros(num_trials),
-        'batch_max': np.zeros(num_trials),
-        'top_k_v1': np.zeros(num_trials),
-        'top_k_v2': np.zeros(num_trials),
+        'pairwise': np.zeros(num_trials),
+        ## 'batch_max': np.zeros(num_trials),
+        ##'top_k_v1': np.zeros(num_trials),
+        ##'top_k_v2': np.zeros(num_trials),
     }
     results_mpc = {
         'log_reduction': [],
@@ -383,8 +389,8 @@ def benchmark_crypten_max(num_trials=2, size=2**10):
         # 'accelerated_cascade': [],
         # 'local_log_reduction': [],
         # 'recursive_pairwise': [],
-        # 'pairwise': [],
-        'batch_max': [],
+        'pairwise': [],
+        # 'batch_max': [],
         # 'top_k_v1': [],
         # 'top_k_v2': [],
     }
@@ -394,10 +400,10 @@ def benchmark_crypten_max(num_trials=2, size=2**10):
         # 'accelerated_cascade': [],
         # 'local_log_reduction': [],
         # 'recursive_pairwise': [],
-        # 'pairwise': [],
-        'batch_max': [],
-        'top_k_v1': [],
-        'top_k_v2': [],
+        'pairwise': [],
+        # 'batch_max': [],
+        # 'top_k_v1': [],
+        # 'top_k_v2': [],
     }
 
     for i in range(num_trials):
@@ -547,7 +553,7 @@ def _approx_top_k_log_reduction(enc_tensor, k, dim=None):
 if __name__ == "__main__":
     # test_stack_em_vectors()
     # bucketize_max_test()
-    ## benchmark_crypten_max()
+    benchmark_crypten_max()
 
     # cosine_sim_naive_test()
     # cosine_sim_opt_test()
@@ -557,6 +563,6 @@ if __name__ == "__main__":
     # run_benchmark(cosine_similarity_mpc_opt2, preprocess_cosine_similarity_mpc_naive, [], num_trials=5)
 
     # set_precision(16)
-    set_sqrt_iters(10)
-    run_benchmark(euclidean_mpc, preprocess_cosine_similarity_mpc_naive, [], num_trials=1, benchmark=euclidean)
+    # set_sqrt_iters(10)
+    # run_benchmark(euclidean_mpc, preprocess_cosine_similarity_mpc_naive, [], num_trials=1, benchmark=euclidean) # currently breaks because matrix sizes
 
