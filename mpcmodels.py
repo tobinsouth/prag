@@ -218,9 +218,9 @@ class MPCIVFRetrievalModel:
                 for jj in range(t3.shape[0]):
                     if t3[jj][0] == idx_list[0]:
                         t3jj = t3[jj][t3[jj] != -1].int()
-                        print("-=-=-")
-                        print(f"Cluster {idx}={torch.all(t3jj == torch.Tensor(idx_list))}")
-                        # print(f"Cluster {idx}={t3[jj].int()}, and originally={idx_list}")
+                        logger.debug("-=-=-")
+                        logger.debug(f"Cluster {idx}={torch.all(t3jj == torch.Tensor(idx_list))}")
+                        # logger.debug(f"Cluster {idx}={t3[jj].int()}, and originally={idx_list}")
             logger.debug(f"idx_list_count={idx_list_count}")
         
         # Compute encrypted distances to candidates
@@ -373,7 +373,10 @@ if __name__ == "__main__":
 
     ## Benchmark
     benchmark_knn(N=1000, nlist=50)
-    # benchmark_knn(N=10000, nlist=250)
+    benchmark_knn(N=10000, nlist=250)
+    benchmark_knn(N=100000, nlist=250)
+    benchmark_knn(N=100000, nlist=1500)
+    benchmark_knn(N=100000, nlist=1500, k=100)
 
 
 
