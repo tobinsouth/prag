@@ -26,6 +26,9 @@ class DenseRetrievalExactSearch(BaseSearch):
         self.results = {}
         self.corpus_embeddings = None
         self.query_embeddings = None
+    
+    def train_model(**args):
+        raise NotImplementedError("This function should only be used by MPCDenseRetrievalExactSearch")
 
     def preemebed_corpus(self, corpus: Dict[str, Dict[str, str]], save_path: str = None) -> None:
               
@@ -126,6 +129,9 @@ class DenseRetrievalExactSearch(BaseSearch):
 
             # Get chunk of corpus embeddings
             sub_corpus_embeddings = corpus_embeddings[corpus_start_idx:corpus_end_idx]
+
+            if score_function in ["ivf_topk", "ivf_topk_mpc"]:
+                self.train_model(sub_corpus_embeddings, score_function)
 
             for query_itr, query_embedding in enumerate(query_embeddings):
 
